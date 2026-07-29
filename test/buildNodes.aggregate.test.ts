@@ -48,9 +48,9 @@ const aggRule = (over: Partial<Record<string, unknown>> = {}): Condition => ({
       operator: 'greaterThan',
       value: 1000,
       condition: {
-        all: [{ field: 'occurredAt', dateOperator: 'after', value: '2024-01-01', _id: 'w' }],
+        all: [{ field: 'occurredAt', dateOperator: 'after', value: '2024-01-01', __id: 'w' }],
       },
-      _id: 'agg',
+      __id: 'agg',
       ...over,
     },
   ],
@@ -208,7 +208,7 @@ describe('buildRoot — aggregate nodes', () => {
     expect((child.aggregate as { field?: string }).field).toBeUndefined(); // reset
     expect(child.operator).toBe('greaterThan');
     expect(child.value).toBe(1000);
-    expect(child._id).toBe('agg'); // identity preserved
+    expect(child.__id).toBe('agg'); // identity preserved
   });
 
   test('round-trips through stringify/parse without shape drift', () => {
