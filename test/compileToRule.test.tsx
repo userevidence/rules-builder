@@ -68,12 +68,12 @@ describe('a decoration facet compiles to a rule that passes the lens gate and ev
     if (!opt) throw new Error('NPS not offered');
     act(() => row.field?.set(opt.value));
 
-    // the array node's condition = [ key=nps (locked leading), value leaf ]
+    // the array node's condition IS the user-rows group — the identity is out of view.
     let arr = rootGroup(result.current).children[0] as ArrayNode;
-    let value = arr.condition?.children[1] as LeafNode;
+    let value = arr.condition?.children[0] as LeafNode;
     act(() => value.operator?.set('greaterThan'));
     arr = rootGroup(result.current).children[0] as ArrayNode;
-    value = arr.condition?.children[1] as LeafNode;
+    value = arr.condition?.children[0] as LeafNode;
     act(() => value.value?.set(5));
 
     const emitted = result.current.value;

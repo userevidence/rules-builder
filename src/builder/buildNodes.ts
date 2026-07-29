@@ -7,7 +7,7 @@ import {
   type Lens,
   type ValueShape,
 } from '@inixiative/json-rules';
-import { groupMeta, switchGroupOperator } from '../core/decorate';
+import { switchGroupOperator } from '../core/decorate';
 import { addRule, getNode, type RulePath, removeNode, setNode } from '../core/tree';
 import {
   type Decoration,
@@ -132,9 +132,6 @@ export type GroupNode = {
   /** Set when this group is a **preset** alias — a renderer shows only the name;
    *  the whole condition is opaque, with no pickers or add-rule. */
   atomic?: boolean;
-  /** Leading `children` that are the branch facet's fixed, non-editable `where` —
-   *  a renderer hides exactly this many (the identity block). */
-  lockedLeading?: number;
   /** Present when a facet governs this node or a detach is active. `raw` suspends
    *  recognition for the session — hoist/lock drop and the identity rows render
    *  as plain editable children. Session-only: the `__facetId` meta backing it is
@@ -210,10 +207,6 @@ export type ArrayNode = {
   /** Set when this node is a **preset** alias — a renderer shows only the name; the
    *  whole condition is opaque, with no pickers. */
   atomic?: boolean;
-  /** The count of leading `condition` children that are the facet's fixed,
-   *  non-editable `where` — a renderer hides exactly this many (the identity
-   *  block), leaving the rest editable. */
-  lockedLeading?: number;
   /** Present when a facet governs (or could govern) this node — see
    *  {@link GroupNode.facetMode}. */
   facetMode?: FacetModeControl;
@@ -619,11 +612,20 @@ const buildArray = (
       root: subRoot,
       commit: (next) => ctx.commit(setNode(ctx.root, path, { ...rec, [key]: next } as Condition)),
     };
-    const group = buildGroup(subRoot, [], depth + 1, subCtx, relScope);
-    // A matched facet's `condition` group opens with the fixed where — its ALL/ANY
-    // toggle must never absorb that identity clause (see lockedGroupView).
-    const lead = key === 'condition' && matchedFacet ? leadingWhereCount(matchedFacet, node) : 0;
-    return lead ? lockedGroupView(group, subRoot, lead, subCtx.commit) : group;
+    // Canonical facet shape (identity leading + one trailing user-rows group): the
+    // rows group IS the facet's editable surface — its toggle, paths, and adds are
+    // real, and the identity is simply not part of the view. Any other matched
+    // shape renders raw under the badge: nothing is hidden, so a toggle honestly
+    // changes what the user sees — and breaks the bind — instead of silently
+    // absorbing a hidden clause.
+    if (key === 'condition' && matchedFacet) {
+      const lead = leadingWhereCount(matchedFacet, node);
+      const kids = (subRoot as { all?: Condition[] }).all ?? [];
+      const tail = kids[lead];
+      if (lead > 0 && kids.length === lead + 1 && tail && isGroupNode(tail))
+        return buildGroup(tail, [lead], depth + 1, subCtx, relScope);
+    }
+    return buildGroup(subRoot, [], depth + 1, subCtx, relScope);
   };
 
   // Aggregate target: the numeric scalar (or check()-only Json) on the RELATED model
@@ -677,7 +679,6 @@ const buildArray = (
           icon: matchedFacet.icon,
         }
       : undefined,
-    lockedLeading: matchedFacet ? leadingWhereCount(matchedFacet, node) || undefined : undefined,
     selectors: matchedFacet?.selectors,
     facetMode: facetModeControl(matchedFacet, rec, path, ctx),
     atomic: matchedFacet && isPreset(matchedFacet) ? true : undefined,
@@ -809,9 +810,27 @@ const buildGroup = (
       ? modelDecor(ctx.decoration, ctx.anchorLens.mapName, ctx.anchorLens.model).label
       : undefined);
 
-  const lockedLead = branchFacet && branch ? leadingWhereCount(branchFacet, node) : 0;
+  // Canonical branch shape (identity leading + one trailing user-rows group): the
+  // rows group IS the facet's surface — built at its real path with the facet's
+  // chrome; the identity is not part of the view, and removing the facet removes
+  // the whole unit. Any other matched shape renders raw under the badge: nothing
+  // hidden, so a toggle honestly changes what the user sees — and breaks the
+  // bind — instead of silently absorbing a hidden clause.
+  const identityLead = branchFacet && branch ? leadingWhereCount(branchFacet, node) : 0;
+  const kids = groupChildrenOf(node);
+  const rowsTail = kids[identityLead];
+  if (identityLead > 0 && kids.length === identityLead + 1 && rowsTail && isGroupNode(rowsTail)) {
+    const inner = buildGroup(rowsTail, [...path, identityLead], depth, ctx, groupScope);
+    return {
+      ...inner,
+      label: groupLabel ?? inner.label,
+      hoist: groupHoist,
+      facetMode: facetModeControl(groupFacet, node as Rec, path, ctx),
+      remove: path.length ? () => ctx.commit(removeNode(ctx.root, path)) : undefined,
+    };
+  }
 
-  const group: GroupNode = {
+  return {
     kind: 'group',
     id: idOf(node, path.length ? (path[path.length - 1] as number) : 0),
     path,
@@ -829,15 +848,9 @@ const buildGroup = (
     canAddGroup: depth < ctx.maxDepth,
     hoist: groupHoist,
     atomic: preset ? true : undefined,
-    lockedLeading: lockedLead || undefined,
     facetMode: facetModeControl(groupFacet, node as Rec, path, ctx),
     remove: path.length ? () => ctx.commit(removeNode(ctx.root, path)) : undefined,
   };
-  // A branch facet's group opens with the fixed where — its ALL/ANY toggle must
-  // never absorb that identity clause (see lockedGroupView).
-  return lockedLead
-    ? lockedGroupView(group, node, lockedLead, (next) => ctx.commit(setNode(ctx.root, path, next)))
-    : group;
 };
 
 /**
@@ -867,66 +880,6 @@ const facetModeControl = (
           (mode === 'raw' ? { ...rec, __facetId: null } : restRec) as Condition,
         ),
       );
-    },
-  };
-};
-
-/**
- * A facet's fixed `where` clauses are the node's identity — they must stay AND-ed no
- * matter what the group's visible ALL/ANY toggle says. Flipping the operator on the
- * whole group would OR the identity clause into the user's rows: the rule silently
- * changes meaning AND the node stops matching its facet (`matchFacet` reads the
- * identity from `all`). The toggle instead writes
- * `{ all: [...locked, { any: [...tail] }] }`, and this view flattens the nested tail
- * group back into the facet's row list, so a renderer still sees one flat group whose
- * operator reads `any`.
- */
-const lockedGroupView = (
-  group: GroupNode,
-  node: Condition,
-  lead: number,
-  commit: (next: Condition) => void,
-): GroupNode => {
-  const rec = node as { all?: Condition[]; any?: Condition[] };
-  const children = rec.all ?? rec.any ?? [];
-  // Everything non-structural (error, __groupId) survives the rewrite, exactly as
-  // switchGroupOperator preserves it on an ordinary toggle.
-  const meta = groupMeta(node);
-  // Nested-any state: exactly the locked prefix plus one trailing `any` group.
-  const tail = children.length === lead + 1 ? (children[lead] as { any?: Condition[] }) : undefined;
-  const tailAny = tail && Array.isArray(tail.any) ? tail.any : undefined;
-  const inner = tailAny ? (group.children[lead] as GroupNode | undefined) : undefined;
-  if (tailAny && inner?.kind === 'group') {
-    return {
-      ...group,
-      operator: {
-        value: 'any',
-        set: (op) => {
-          if (op !== 'all') return;
-          commit({
-            all: [...children.slice(0, lead), ...tailAny],
-            ...meta,
-          } as Condition);
-        },
-      },
-      // The nested group's children carry their real paths — edits land in place.
-      children: [...group.children.slice(0, lead), ...inner.children],
-      addRule: inner.addRule,
-      addGroup: inner.addGroup,
-      canAddGroup: inner.canAddGroup,
-    };
-  }
-  return {
-    ...group,
-    operator: {
-      value: group.operator.value,
-      set: (op) => {
-        if (op !== 'any') return group.operator.set(op);
-        commit({
-          all: [...children.slice(0, lead), { any: children.slice(lead) }],
-          ...meta,
-        } as Condition);
-      },
     },
   };
 };

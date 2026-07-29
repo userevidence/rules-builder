@@ -174,7 +174,10 @@ describe('describeFacets — collection facets', () => {
     });
     const seed = f.seed as { condition: { all: Condition[] }; filter?: unknown };
     expect(seed.condition.all[0]).toMatchObject({ field: 'key', value: 'nps' });
-    expect(seed.condition.all[1]).toMatchObject({ field: 'value' });
+    // The user's rows live in their own trailing group — the canonical facet shape.
+    expect((seed.condition.all[1] as { all: Condition[] }).all[0]).toMatchObject({
+      field: 'value',
+    });
     // no window filter — the fixed where is a leading condition.
     expect(seed.filter).toBeUndefined();
   });
@@ -208,7 +211,9 @@ describe('describeFacets — collection facets', () => {
     expect(dest.field).toBe('customFields');
     expect(dest.arrayOperator).toBe('any');
     expect(dest.condition.all[0]).toMatchObject({ field: 'key', value: 'nps' });
-    expect(dest.condition.all[1]).toMatchObject({ field: 'value' });
+    expect((dest.condition.all[1] as { all: Condition[] }).all[0]).toMatchObject({
+      field: 'value',
+    });
   });
 
   test('the upstream traversal defaults to `any` when defaultWhere is omitted', () => {

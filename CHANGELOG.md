@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.23.0 — canonical facet shape; the lock machinery is gone
+
+- **A facet's rule now carries an explicit user-rows group from birth**:
+  `{ all: [...where, { all|any: [...rows] }] }`. Seeds emit it; ingest normalizes
+  every recognized node into it (legacy flat rules, hand/AI-authored clause
+  order, and the 0.22 nested-any toggle shape all land on the same canonical
+  form — an `all` reorder plus a one-group wrap, semantics never change).
+- **The rows group IS the facet's editable surface.** The builder hands a
+  renderer the rows group itself — its toggle, paths, addRule, and children are
+  real — and the identity is simply not part of the view. `lockedGroupView`
+  (the flatten-the-nest view rewrite) and **`lockedLeading` are deleted**:
+  there is nothing to lock because nothing user-controlled contains the
+  identity. Removing the facet node removes the whole unit.
+- **A non-canonical live lookalike renders honestly raw**: a hand-authored
+  match mid-session gets the badge with every row visible and editable — its
+  toggle visibly changes the rule and breaks the bind, instead of silently
+  absorbing a hidden clause. (`facetMode` session detach shows the same true
+  structure and is unchanged.)
+- **Composition never extends a facet's umbrella**: recognition is per-node and
+  exact; a facet claims precisely its own subtree. Reconciliation of multiple
+  candidates is unchanged (validateDecoration forbids real collisions;
+  most-specific identity wins for collections; resolved once at ingest and
+  pinned by `__facetId` for the session).
+- Renderer migration: drop any `lockedLeading` slicing — children are already
+  exactly what should render.
+
 ## 0.22.0 — the facet ALL/ANY toggle keeps the fixed where AND-ed; `__`-prefixed meta keys
 
 - **Facet toggle no longer ORs the identity clause into user rows** (ZLT-3899).

@@ -355,9 +355,11 @@ const branchSeed = (
 ): Condition => {
   const [first] = branchFields(lens, resolved.prefix, resolved.target, opts);
   // `defaultWhere` is array-only (see its doc) — a branch takes only its fixed
-  // identity `where` plus a first blank leaf.
-  const all = [...whereConditions(facet.where), ...(first ? [ruleForField(first)] : [])];
-  return { all } as Condition;
+  // identity `where` plus a first blank leaf, the leaf in its own rows group
+  // (the canonical facet shape: identity outside every user control).
+  const identity = whereConditions(facet.where);
+  const rows = first ? [ruleForField(first)] : [];
+  return { all: identity.length ? [...identity, { all: rows }] : rows } as Condition;
 };
 
 /** Whether a path from `(mapName, modelName)` crosses a list relation. */
@@ -482,10 +484,16 @@ const buildCollection = (
       const leaf = rest.length
         ? leafRuleAt(lens, target.mapName, target.modelName, rest, kind, opts)
         : null;
+      const identity = whereConditions(where);
+      // Canonical facet shape: the user's rows live in their own group from birth —
+      // the identity is a sibling, structurally outside every user control, so no
+      // toggle can ever absorb it.
       return {
         field: listField,
         arrayOperator: op,
-        condition: { all: [...whereConditions(where), ...(leaf ? [leaf] : [])] },
+        condition: {
+          all: identity.length ? [...identity, { all: leaf ? [leaf] : [] }] : leaf ? [leaf] : [],
+        },
       } as Condition;
     }
     const target = relationTarget(entry, m);
@@ -750,8 +758,8 @@ export const stampFacetIds = (
   if ((key !== undefined || 'arrayOperator' in next) && next.__facetId === undefined) {
     const facet = matchFacet(lens, decoration, next as Condition);
     if (facet) {
-      if ('arrayOperator' in next)
-        next = hoistIdentityLeading(facet, next as Condition) as Record<string, unknown>;
+      if (!isPreset(facet))
+        next = normalizeFacetShape(facet, next as Condition) as Record<string, unknown>;
       next.__facetId = facetId(facet);
     }
   }
@@ -759,39 +767,60 @@ export const stampFacetIds = (
 };
 
 /**
- * Ingest normalization for a matched collection: move the facet's identity
- * clauses to the LEADING positions of the innermost condition block (descending
- * traversal chains exactly like the matcher). Subset matching deliberately
- * tolerates hand/AI-authored clause order, but the toggle lock (lockedGroupView,
- * lockedLeading) keys off the leading prefix — without this, an out-of-order
- * identity escapes the lock and the ALL/ANY toggle ORs it into the user's rows.
- * `all` is order-independent, so the reorder never changes semantics.
+ * Ingest normalization into the canonical facet shape: identity clauses leading,
+ * the user's rows in ONE trailing group — `{ all: [...where, { all|any: rows }] }`.
+ * The rows group is the facet's editable surface (its toggle and paths are real);
+ * the identity is a sibling, structurally outside every user control, so no
+ * toggle can absorb it — the invariant the deleted lockedGroupView used to fake
+ * with a view-time rewrite. Legacy flat rules, hand/AI-authored clause order,
+ * and the pre-0.23 nested-any toggle shape all land here; semantics never change
+ * (`all` is order-independent and the wrap is a conjunction of one group).
  */
-const hoistIdentityLeading = (facet: Facet, node: Condition): Condition => {
+const normalizeFacetShape = (facet: Facet, node: Condition): Condition => {
   const lead = whereConditions(facet.where);
   if (lead.length === 0) return node;
 
-  const reorder = (rec: Record<string, unknown>): Record<string, unknown> => {
-    const cond = rec.condition as { all?: Condition[] } | undefined;
-    const cs = cond?.all;
-    if (!cs) return rec;
-    // Traversal chain: a single nested array child — the identity sits deeper.
-    if (cs.length === 1 && cs[0] && typeof cs[0] === 'object' && 'arrayOperator' in cs[0]) {
-      const inner = reorder(cs[0] as Record<string, unknown>);
-      return inner === cs[0] ? rec : { ...rec, condition: { ...cond, all: [inner as Condition] } };
-    }
-    if (isLeadingPrefix(lead, cs)) return rec;
-    const rest = [...cs];
+  // Claim each identity clause (any position), wrap what remains as the rows
+  // group. `undefined` = already canonical or not claimable — leave untouched.
+  const canonicalize = (conds: Condition[]): Condition[] | undefined => {
+    const rest = [...conds];
     const identity: Condition[] = [];
     for (const clause of lead) {
       const at = rest.findIndex((c) => sameConditions([clause], [c]));
-      if (at < 0) return rec;
+      if (at < 0) return undefined;
       identity.push(...rest.splice(at, 1));
     }
-    return { ...rec, condition: { ...cond, all: [...identity, ...rest] } };
+    const tail =
+      rest.length === 1 && rest[0] && groupChildren(rest[0]) !== undefined
+        ? rest[0]
+        : ({ all: rest } as Condition);
+    const next = [...identity, tail];
+    const unchanged = next.length === conds.length && next.every((c, i) => c === conds[i]);
+    return unchanged ? undefined : next;
   };
 
-  return reorder(node as Record<string, unknown>) as Condition;
+  // Branch group: identity is conjoined at the top of the group itself. Only an
+  // `all` compound normalizes — inside `any`, the "identity" is a disjunct and
+  // means something else entirely.
+  const rec = node as Record<string, unknown>;
+  if (Array.isArray(rec.all)) {
+    const next = canonicalize(rec.all as Condition[]);
+    return next ? ({ ...rec, all: next } as Condition) : node;
+  }
+
+  // Collection: descend the traversal chain to the innermost condition block.
+  const reorder = (r: Record<string, unknown>): Record<string, unknown> => {
+    const cond = r.condition as { all?: Condition[] } | undefined;
+    const cs = cond?.all;
+    if (!cs) return r;
+    if (cs.length === 1 && cs[0] && typeof cs[0] === 'object' && 'arrayOperator' in cs[0]) {
+      const inner = reorder(cs[0] as Record<string, unknown>);
+      return inner === cs[0] ? r : { ...r, condition: { ...cond, all: [inner as Condition] } };
+    }
+    const next = canonicalize(cs);
+    return next ? { ...r, condition: { ...cond, all: next } } : r;
+  };
+  return reorder(rec) as Condition;
 };
 
 /**

@@ -71,12 +71,13 @@ describe('facetMode — detach to raw, session-only', () => {
     const node = facetNode(result.current);
     expect(node.facetMode?.value).toBe('raw');
     expect(node.hoist).toBeUndefined();
-    expect(node.lockedLeading).toBeUndefined();
-    // The identity row is now an ordinary editable child.
+    // Raw shows the true canonical structure: the identity row is an ordinary
+    // editable child, followed by the user-rows group.
     const identity = node.condition?.children[0] as LeafNode;
     expect(identity.kind).toBe('leaf');
     expect(identity.field.value).toBe('key');
     expect(typeof identity.value?.set).toBe('function');
+    expect(node.condition?.children[1]?.kind).toBe('group');
   });
 
   test('detach never persists: value carries no __facetId and a reload recaptures', () => {
@@ -108,7 +109,8 @@ describe('facetMode — detach to raw, session-only', () => {
     act(() => facetNode(result.current).facetMode?.set('faceted'));
     const node = facetNode(result.current);
     expect(node.hoist?.label).toBe('NPS');
-    expect(node.lockedLeading).toBe(1);
+    // Faceted again: the rows group is the surface, identity out of view.
+    expect(node.condition?.children).toHaveLength(1);
   });
 
   test('editing the identity while raw legitimately un-facets: re-attach finds nothing', () => {
@@ -174,10 +176,11 @@ describe('the pin never exempts a node from being its facet (adversarial finding
     });
   });
 
-  test('an out-of-order identity is hoisted to leading at ingest, so the lock engages', () => {
-    // Subset matching accepts the where anywhere in the block; the toggle lock
-    // keys off the LEADING prefix. Ingest must reconcile the two, or the ALL/ANY
-    // toggle ORs the identity into the user rows — the exact bug of ZLT-3899.
+  test('an out-of-order identity normalizes to canonical at ingest — toggles never touch it', () => {
+    // Subset matching accepts the where anywhere in the block; ingest rewrites the
+    // node into the canonical shape (identity leading, rows in their own group),
+    // so the toggle the user sees belongs to the rows group alone — the ZLT-3899
+    // corruption is structurally unreachable.
     const outOfOrder: Condition = {
       all: [
         {
@@ -192,7 +195,8 @@ describe('the pin never exempts a node from being its facet (adversarial finding
     );
     const node = facetNode(result.current);
     expect(node.hoist?.label).toBe('NPS');
-    expect(node.lockedLeading).toBe(1);
+    // The rows group is the surface — the identity is out of view.
+    expect(node.condition?.children).toHaveLength(1);
     act(() => facetNode(result.current).condition?.operator.set('any'));
     const saved = (result.current.value as { all: Condition[] }).all[0] as {
       condition: { all?: Condition[] };
@@ -242,12 +246,15 @@ describe('branch facet — detach unlocks the identity clause', () => {
     );
     const group = () => rootGroup(result.current).children[0] as GroupNode;
     expect(group().facetMode?.value).toBe('faceted');
+    // Faceted: the rows group is the surface (1 row).
+    expect(group().children).toHaveLength(1);
     act(() => group().facetMode?.set('raw'));
     expect(group().hoist).toBeUndefined();
-    expect(group().lockedLeading).toBeUndefined();
     expect(group().facetMode?.value).toBe('raw');
+    // Raw: true structure — identity leaf + rows group.
+    expect(group().children).toHaveLength(2);
     act(() => group().facetMode?.set('faceted'));
     expect(group().hoist?.label).toBe('SaaS Company');
-    expect(group().lockedLeading).toBe(1);
+    expect(group().children).toHaveLength(1);
   });
 });

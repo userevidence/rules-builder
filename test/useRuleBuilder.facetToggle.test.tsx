@@ -90,10 +90,11 @@ describe('collection facet — ALL/ANY toggle keeps the fixed where AND-ed', () 
     act(() => facetNode(result.current).condition?.operator.set('any'));
     const node = facetNode(result.current);
     expect(node.hoist?.label).toBe('NPS');
-    expect(node.lockedLeading).toBe(1);
+    // The identity is not part of the view — the rows group is the whole surface.
+    expect(node.condition?.children).toHaveLength(1);
   });
 
-  test('the nested-any state reads back flat: operator "any", rows as direct children', () => {
+  test('the rows group is the surface: operator "any", user rows as its children', () => {
     const { result } = renderHook(() =>
       useRuleBuilder({
         source: eavSource,
@@ -104,10 +105,10 @@ describe('collection facet — ALL/ANY toggle keeps the fixed where AND-ed', () 
     act(() => facetNode(result.current).condition?.operator.set('any'));
     const group = facetNode(result.current).condition;
     expect(group?.operator.value).toBe('any');
-    // locked where + the two user rows — the nested group is invisible to a renderer.
-    expect(group?.children).toHaveLength(3);
+    // Only the user's rows — the identity clause is not in the view at all.
+    expect(group?.children).toHaveLength(2);
     expect(group?.children.every((c) => c.kind === 'leaf')).toBe(true);
-    expect((group?.children[1] as LeafNode).value?.current).toBe('9');
+    expect((group?.children[0] as LeafNode).value?.current).toBe('9');
   });
 
   test('addRule in the ANY state lands inside the nested group, not next to the where', () => {
@@ -149,7 +150,7 @@ describe('collection facet — ALL/ANY toggle keeps the fixed where AND-ed', () 
     expect(savedNode(result.current).condition).toMatchObject({ error: 'pick a score' });
   });
 
-  test('toggling back to ALL flattens the nested group in place', () => {
+  test('toggling back to ALL keeps the canonical shape: identity + rows group', () => {
     const { result } = renderHook(() =>
       useRuleBuilder({
         source: eavSource,
@@ -162,8 +163,7 @@ describe('collection facet — ALL/ANY toggle keeps the fixed where AND-ed', () 
     expect(savedNode(result.current).condition).toEqual({
       all: [
         expect.objectContaining(where),
-        expect.objectContaining(row('9')),
-        expect.objectContaining(row('10')),
+        { all: [expect.objectContaining(row('9')), expect.objectContaining(row('10'))] },
       ],
     });
     expect(facetNode(result.current).hoist?.label).toBe('NPS');
@@ -227,7 +227,7 @@ describe('collection facet — value options stay pinned inside the nested any g
       useRuleBuilder({ source: pinnedSource, decoration: healthView, defaultValue: saved }),
     );
     act(() => facetNode(result.current).condition?.operator.set('any'));
-    const valueRow = facetNode(result.current).condition?.children[1] as LeafNode;
+    const valueRow = facetNode(result.current).condition?.children[0] as LeafNode;
     expect(valueRow.value?.options?.map((o) => o.value)).toEqual(['Green', 'Red']);
     expect(valueRow.valid).toBe(true);
   });
@@ -255,7 +255,42 @@ describe('whereless collection facet — ANY toggle must not break recognition',
     );
     const node = facetNode(result.current);
     expect(node.hoist?.label).toBe('Values');
-    expect(node.lockedLeading).toBeUndefined();
+  });
+});
+
+describe('a live lookalike (non-canonical match) renders honestly raw', () => {
+  test('badge without hiding: every row visible, and the toggle breaks the bind', () => {
+    // Author a flat lookalike mid-session (ingest never saw it as a facet, so
+    // nothing was normalized): the badge appears, but the identity row stays a
+    // visible, editable child. Toggling the group is then an honest, visible
+    // edit — recognition drops instead of a hidden clause being absorbed.
+    const notYet: Condition = {
+      all: [
+        {
+          field: 'customFields',
+          arrayOperator: 'any',
+          condition: { all: [{ field: 'key', operator: 'equals', value: 'other' }, row('9')] },
+        } as Condition,
+      ],
+    };
+    const { result } = renderHook(() =>
+      useRuleBuilder({ source: eavSource, decoration: npsView, defaultValue: notYet }),
+    );
+    expect(facetNode(result.current).hoist).toBeUndefined();
+    act(() => {
+      const keyRow = facetNode(result.current).condition?.children[0] as LeafNode;
+      keyRow.value?.set('nps');
+    });
+    const node = facetNode(result.current);
+    expect(node.hoist?.label).toBe('NPS');
+    // Non-canonical: nothing is hidden — both rows render, identity included.
+    expect(node.condition?.children).toHaveLength(2);
+    act(() => facetNode(result.current).condition?.operator.set('any'));
+    // The toggle visibly changed the rule the user was looking at — bind breaks.
+    expect(facetNode(result.current).hoist).toBeUndefined();
+    expect((result.current.value as { all: Condition[] }).all[0]).toMatchObject({
+      condition: { any: [expect.objectContaining(where), expect.objectContaining(row('9'))] },
+    });
   });
 });
 
@@ -299,7 +334,8 @@ describe('branch facet — ALL/ANY toggle keeps the fixed where AND-ed', () => {
     );
     const group = rootGroup(result.current).children[0] as GroupNode;
     expect(group.hoist?.label).toBe('SaaS Company');
-    expect(group.lockedLeading).toBe(1);
+    // Ingest normalized to canonical: the rows group is the surface (2 rows).
+    expect(group.children).toHaveLength(2);
     act(() => group.operator.set('any'));
     expect((result.current.value as { all: Condition[] }).all[0]).toEqual({
       all: [
@@ -315,6 +351,6 @@ describe('branch facet — ALL/ANY toggle keeps the fixed where AND-ed', () => {
     const after = rootGroup(result.current).children[0] as GroupNode;
     expect(after.hoist?.label).toBe('SaaS Company');
     expect(after.operator.value).toBe('any');
-    expect(after.children).toHaveLength(3);
+    expect(after.children).toHaveLength(2);
   });
 });

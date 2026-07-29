@@ -354,9 +354,10 @@ const Group = ({ node }: { node: GroupNode }) => {
   const [collapsed, setCollapsed] = useState(false);
   // A group's display name: its facet's label (a hoisted branch) or the retagged
   // root/anchor model (`labels.models`). A facet's fixed `where` is identity, not
-  // user content — `lockedLeading` says how many leading children to hide.
+  // user content — the builder already presents only the user-rows surface, so
+  // children render as-is; there is nothing to hide.
   const title = node.hoist?.label ?? node.label;
-  const visible = node.lockedLeading ? node.children.slice(node.lockedLeading) : node.children;
+  const visible = node.children;
   return (
     <div
       className={`rounded-lg border border-border border-l-2 p-3 ${node.depth ? 'ml-4 border-l-muted-foreground/40 bg-muted/30' : 'border-l-primary'}`}

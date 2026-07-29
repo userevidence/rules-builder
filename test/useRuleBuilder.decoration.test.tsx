@@ -192,10 +192,9 @@ describe('useRuleBuilder — rehydration (detecting an aliased saved rule)', () 
     expect(node.kind).toBe('array');
     expect(node.hoist?.label).toBe('NPS');
     expect(node.arrayOperator.hidden).toBe(true);
-    // one leading condition (the fixed `key=nps` where) is locked/hidden.
-    expect(node.lockedLeading).toBe(1);
-    // the kind override flows into the element surface: `value` (after the where) offers numeric ops.
-    const valueLeaf = node.condition?.children[1] as LeafNode;
+    // canonical presentation: the rows group is the surface, identity out of view.
+    // the kind override flows into the element surface: `value` offers numeric ops.
+    const valueLeaf = node.condition?.children[0] as LeafNode;
     expect(valueLeaf.operator?.options.map((o) => o.value)).toContain('greaterThan');
   });
 
