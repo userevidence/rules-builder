@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.1 — adversarial fixes: disjunct identity never matches; no remove on the rows surface
+
+- **An `any` compound never matches a where-carrying branch facet.** Identity is
+  identity only when AND-ed — inside `any` the clause is a disjunct. Both the
+  matcher and `leadingWhereCount` now require an `all` compound, so
+  `{ any: [where, { all: rows }] }` (reachable via detach → toggle → re-attach)
+  renders honestly raw instead of hiding the disjunct and displaying AND
+  semantics over an OR rule.
+- **The collapsed rows group exposes no `remove`.** The condition surface keeps
+  the sub-root contract (`remove: undefined`); previously the rows group's own
+  remove leaked through, letting one gesture delete every user row and strand
+  the hidden identity.
+
 ## 0.23.0 — canonical facet shape; the lock machinery is gone
 
 - **A facet's rule now carries an explicit user-rows group from birth**:

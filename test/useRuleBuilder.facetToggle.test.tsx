@@ -294,6 +294,20 @@ describe('a live lookalike (non-canonical match) renders honestly raw', () => {
   });
 });
 
+describe('adversarial regressions — 0.23.1', () => {
+  test('the collapsed rows group exposes no remove: the condition surface is not deletable', () => {
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: eavSource,
+        decoration: npsView,
+        defaultValue: savedFacet([row('9'), row('10')]),
+      }),
+    );
+    expect(facetNode(result.current).hoist?.label).toBe('NPS');
+    expect(facetNode(result.current).condition?.remove).toBeUndefined();
+  });
+});
+
 describe('branch facet — ALL/ANY toggle keeps the fixed where AND-ed', () => {
   const branchMap: FieldMap = {
     models: {

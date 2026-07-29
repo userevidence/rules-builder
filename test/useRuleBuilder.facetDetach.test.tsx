@@ -240,6 +240,40 @@ describe('branch facet — detach unlocks the identity clause', () => {
     ],
   };
 
+  test('an any-compound never matches a where-carrying branch: disjunct identity is not identity', () => {
+    // {any: [where, {all: rows}]} means "saas OR arr>100" — matching it as the
+    // facet would hide the disjunct and display AND semantics for an OR rule.
+    // Reachable via pure UI: detach → toggle any → re-attach must find nothing.
+    const orShaped: Condition = {
+      all: [
+        {
+          any: [
+            branchWhere as Condition,
+            { all: [{ field: 'account.arr', operator: 'greaterThan', value: 100 }] },
+          ],
+        } as Condition,
+      ],
+    };
+    const { result } = renderHook(() =>
+      useRuleBuilder({ source: branchSource, decoration, defaultValue: orShaped }),
+    );
+    const direct = rootGroup(result.current).children[0] as GroupNode;
+    expect(direct.hoist).toBeUndefined();
+    expect(direct.operator.value).toBe('any');
+    expect(direct.children).toHaveLength(2);
+
+    // The UI path: canonical facet → raw → toggle any → re-attach finds nothing.
+    const { result: viaUi } = renderHook(() =>
+      useRuleBuilder({ source: branchSource, decoration, defaultValue }),
+    );
+    const group = () => rootGroup(viaUi.current).children[0] as GroupNode;
+    act(() => group().facetMode?.set('raw'));
+    act(() => group().operator.set('any'));
+    act(() => group().facetMode?.set('faceted'));
+    expect(group().hoist).toBeUndefined();
+    expect(group().operator.value).toBe('any');
+  });
+
   test('detaching a branch group drops hoist and lock; re-attach restores both', () => {
     const { result } = renderHook(() =>
       useRuleBuilder({ source: branchSource, decoration, defaultValue }),

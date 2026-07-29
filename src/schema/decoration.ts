@@ -288,10 +288,12 @@ export const facetElementLeaf = (
 export const leadingWhereCount = (facet: Facet, node: Condition): number => {
   const lead = whereConditions(facet.where);
   if (lead.length === 0) return 0;
-  const rec = node as { condition?: Condition; all?: Condition[]; any?: Condition[] };
+  const rec = node as { condition?: Condition; all?: Condition[] };
+  // Identity counts only inside an `all` compound — in an `any`, the clause is a
+  // disjunct, not identity.
   const conds = rec.condition
     ? ((rec.condition as { all?: Condition[] }).all ?? [])
-    : (rec.all ?? rec.any ?? []);
+    : (rec.all ?? []);
   return isLeadingPrefix(lead, conds) ? lead.length : 0;
 };
 
@@ -679,7 +681,10 @@ export const matchFacet = (
       if (!children) continue;
       const lead = whereConditions(facet.where);
       if (lead.length > 0) {
-        if (isLeadingPrefix(lead, children)) return facet;
+        // Identity is identity only when AND-ed: inside an `any` compound the
+        // clause is a disjunct and means something else entirely — never a match.
+        const conjoined = Array.isArray((node as { all?: Condition[] }).all);
+        if (conjoined && isLeadingPrefix(lead, children)) return facet;
         continue;
       }
       const leaves = children.filter((c) => c && typeof c === 'object' && 'field' in c);

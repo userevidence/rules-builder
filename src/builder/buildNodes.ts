@@ -623,7 +623,10 @@ const buildArray = (
       const kids = (subRoot as { all?: Condition[] }).all ?? [];
       const tail = kids[lead];
       if (lead > 0 && kids.length === lead + 1 && tail && isGroupNode(tail))
-        return buildGroup(tail, [lead], depth + 1, subCtx, relScope);
+        // A condition surface is never removable (matching the sub-root contract):
+        // without the override, the rows group's own remove would leak here and
+        // delete every user row in one gesture, stranding the hidden identity.
+        return { ...buildGroup(tail, [lead], depth + 1, subCtx, relScope), remove: undefined };
     }
     return buildGroup(subRoot, [], depth + 1, subCtx, relScope);
   };
