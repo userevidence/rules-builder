@@ -14,6 +14,7 @@ import {
   type Decoration,
   decorationSurfaceOptions,
   relabelRelations,
+  stampFacetIds,
   useFacetFields,
 } from '../schema/decoration';
 import { describeModelFields, type RuleBuilderSource, resolve } from '../schema/surface';
@@ -89,7 +90,13 @@ export const useRuleBuilder = (opts: UseRuleBuilderOptions): UseRuleBuilder => {
   );
   const maxDepth = opts.maxDepth ?? 4;
 
-  const [tree, setTree] = useState<Condition>(() => withIds(asRoot(opts.defaultValue, opts.empty)));
+  // Ingest: a condition entering the builder is recognized once — every facet
+  // node stamped with its id (`__facetId`) — then id-tracked for the session.
+  const ingest = (c: Condition | undefined): Condition => {
+    const rooted = asRoot(c, opts.empty);
+    return withIds(opts.decoration ? stampFacetIds(rooted, lens, opts.decoration) : rooted);
+  };
+  const [tree, setTree] = useState<Condition>(() => ingest(opts.defaultValue));
 
   const onChangeRef = useRef(opts.onChange);
   onChangeRef.current = opts.onChange;
@@ -123,7 +130,7 @@ export const useRuleBuilder = (opts: UseRuleBuilderOptions): UseRuleBuilder => {
     value,
     root,
     lens,
-    setCondition: (c) => setTree(withIds(asRoot(c, opts.empty))),
+    setCondition: (c) => setTree(ingest(c)),
     validate: (target) => validateRule(value, { target }),
     describe: () => describeRule(value, lens),
   };

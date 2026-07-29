@@ -12,6 +12,7 @@ export {
   matchFacet,
   modelDecor,
   relabelRelations,
+  stampFacetIds,
   useFacetFields,
   validateDecoration,
   whereConditions,

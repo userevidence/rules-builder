@@ -2,6 +2,7 @@ export type {
   AggregateControl,
   ArrayNode,
   BuilderNode,
+  FacetModeControl,
   FieldControl,
   GroupNode,
   LeafNode,

@@ -95,7 +95,7 @@ describe('useRuleBuilder — onChange lifecycle', () => {
     act(() => leaf.value?.set('silver'));
 
     expect(onChange).toHaveBeenCalledTimes(1);
-    // cleaned: editor `_id`/`_groupId` meta stripped from the payload.
+    // cleaned: editor `__id`/`__groupId` meta stripped from the payload.
     expect(onChange.mock.calls[0][0]).toEqual(stampedLeafRule('silver'));
   });
 
@@ -107,8 +107,8 @@ describe('useRuleBuilder — onChange lifecycle', () => {
       }),
     );
     expect(result.current.value).toEqual(stampedLeafRule('gold'));
-    expect(JSON.stringify(result.current.value)).not.toContain('_id');
-    expect(JSON.stringify(result.current.value)).not.toContain('_groupId');
+    expect(JSON.stringify(result.current.value)).not.toContain('__id');
+    expect(JSON.stringify(result.current.value)).not.toContain('__groupId');
   });
 });
 

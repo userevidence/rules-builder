@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/rules-builder",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "description": "Visual rule builder for @inixiative/json-rules",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -37,14 +37,14 @@
     "url": "git+https://github.com/inixiative/rules-builder.git"
   },
   "peerDependencies": {
-    "@inixiative/json-rules": "^2.18.0",
+    "@inixiative/json-rules": "^2.18.3",
     "react": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
     "@happy-dom/global-registrator": "^20.10.3",
-    "@inixiative/config": "^0.5.12",
-    "@inixiative/json-rules": "^2.18.2",
+    "@inixiative/config": "^0.5.13",
+    "@inixiative/json-rules": "^2.18.3",
     "@tailwindcss/vite": "^4.3.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",

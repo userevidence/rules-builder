@@ -195,15 +195,16 @@ export const facetId = (facet: Facet): string => {
 };
 
 // A rehydrated node carries metadata the authored `where` never has (coerceType
-// from stampCoercions, _id/_groupId from the tree). Strip it and sort keys so the
-// leading-block comparison is order- and coercion-insensitive.
-const META = new Set(['coerceType', '_id', '_groupId']);
+// from stampCoercions, `_`-prefixed editor keys like __id/__groupId — the same
+// prefix stripMeta strips). Drop it and sort keys so the leading-block comparison
+// is order- and coercion-insensitive.
+const isMetaKey = (key: string): boolean => key === 'coerceType' || key.startsWith('_');
 const canonical = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(value as Record<string, unknown>).sort())
-      if (!META.has(key)) out[key] = canonical((value as Record<string, unknown>)[key]);
+      if (!isMetaKey(key)) out[key] = canonical((value as Record<string, unknown>)[key]);
     return out;
   }
   return value;
@@ -627,6 +628,24 @@ export const matchFacet = (
   decoration: Decoration,
   node: Condition,
 ): Facet | undefined => {
+  // `__facetId` (session meta, stripped before `value` emits) is the node's own
+  // facet state: the facet's id when attached, `null` when detached to raw —
+  // recognition suspends and the identity rows render as plain editable children —
+  // and absent when the node is open to being searched, ingested and stamped.
+  // The pin decides WHICH facet an ambiguous shape is — it never exempts the node
+  // from being that shape. An edit that removes the identity must break the bind
+  // honestly, so the pinned facet is structurally re-verified (against it alone,
+  // stamp stripped so the check can't short-circuit); a stale or unresolvable
+  // stamp falls through to the ordinary search.
+  const stamped = (node as { __facetId?: unknown }).__facetId;
+  if (stamped === null) return undefined;
+  if (typeof stamped === 'string') {
+    const byId = decoration.facets.find((f) => facetId(f) === stamped);
+    if (byId) {
+      const { __facetId: _f, ...bare } = node as Record<string, unknown>;
+      if (matchFacet(lens, { ...decoration, facets: [byId] }, bare as Condition)) return byId;
+    }
+  }
   const rec = node as { field?: string; arrayOperator?: string; condition?: Condition };
   const children = groupChildren(node);
   const nodeKey = JSON.stringify(canonical(node));
@@ -677,15 +696,21 @@ export const matchFacet = (
       } else break;
     }
     const lead = whereConditions(facet.where);
-    const destConds = (dest.condition as { all?: Condition[] } | undefined)?.all ?? [];
+    const destRec = dest.condition as { all?: Condition[]; any?: Condition[] } | undefined;
+    // A fixed `where` is identity only when AND-ed, so the subset check below reads
+    // `all` alone — an `any` group containing the where means something else.
+    const destConds = destRec?.all ?? [];
     if (lead.length === 0) {
       // A whereless collection has no identity block, so require the element leaf to
       // actually appear — otherwise any array node on this field would mislabel as
-      // this facet. A whole-collection facet (no leaf) has nothing to require.
+      // this facet. A whole-collection facet (no leaf) has nothing to require. There
+      // is no identity clause to protect either, so the leaf may sit in whichever
+      // compound the group's ALL/ANY toggle produced.
       const leafName = resolved.elementLeaf?.split('.').pop();
+      const conds = destRec?.all ?? destRec?.any ?? [];
       const applies =
         !resolved.elementLeaf ||
-        destConds.some(
+        conds.some(
           (c) => c && typeof c === 'object' && (c as { field?: string }).field === leafName,
         );
       if (applies && bestLead < 0) {
@@ -700,6 +725,73 @@ export const matchFacet = (
     }
   }
   return best;
+};
+
+/**
+ * Ingest pass: stamp every recognizable node with its facet's id — `__facetId`,
+ * the node's own session facet state (id = attached; `null` = detached to raw;
+ * absent = open to search). Stamping pins recognition by id for the session, so
+ * a node's facet-hood can't silently re-derive differently as siblings change.
+ * Already-stamped (including detached) nodes pass through untouched. Session
+ * meta only: stripMeta drops the key before `value` emits, so a saved rule
+ * always reloads via a fresh search. Array `condition`/`filter` subtrees are
+ * scoped to the RELATED model — the builder never facet-matches inside them, so
+ * the walk stops at the array node, exactly like buildNodes.
+ */
+export const stampFacetIds = (
+  condition: Condition,
+  lens: Lens,
+  decoration: Decoration,
+): Condition => {
+  if (!condition || typeof condition !== 'object') return condition;
+  let next = { ...(condition as Record<string, unknown>) };
+  const key = Array.isArray(next.all) ? 'all' : Array.isArray(next.any) ? 'any' : undefined;
+  if (key) next[key] = (next[key] as Condition[]).map((c) => stampFacetIds(c, lens, decoration));
+  if ((key !== undefined || 'arrayOperator' in next) && next.__facetId === undefined) {
+    const facet = matchFacet(lens, decoration, next as Condition);
+    if (facet) {
+      if ('arrayOperator' in next)
+        next = hoistIdentityLeading(facet, next as Condition) as Record<string, unknown>;
+      next.__facetId = facetId(facet);
+    }
+  }
+  return next as Condition;
+};
+
+/**
+ * Ingest normalization for a matched collection: move the facet's identity
+ * clauses to the LEADING positions of the innermost condition block (descending
+ * traversal chains exactly like the matcher). Subset matching deliberately
+ * tolerates hand/AI-authored clause order, but the toggle lock (lockedGroupView,
+ * lockedLeading) keys off the leading prefix — without this, an out-of-order
+ * identity escapes the lock and the ALL/ANY toggle ORs it into the user's rows.
+ * `all` is order-independent, so the reorder never changes semantics.
+ */
+const hoistIdentityLeading = (facet: Facet, node: Condition): Condition => {
+  const lead = whereConditions(facet.where);
+  if (lead.length === 0) return node;
+
+  const reorder = (rec: Record<string, unknown>): Record<string, unknown> => {
+    const cond = rec.condition as { all?: Condition[] } | undefined;
+    const cs = cond?.all;
+    if (!cs) return rec;
+    // Traversal chain: a single nested array child — the identity sits deeper.
+    if (cs.length === 1 && cs[0] && typeof cs[0] === 'object' && 'arrayOperator' in cs[0]) {
+      const inner = reorder(cs[0] as Record<string, unknown>);
+      return inner === cs[0] ? rec : { ...rec, condition: { ...cond, all: [inner as Condition] } };
+    }
+    if (isLeadingPrefix(lead, cs)) return rec;
+    const rest = [...cs];
+    const identity: Condition[] = [];
+    for (const clause of lead) {
+      const at = rest.findIndex((c) => sameConditions([clause], [c]));
+      if (at < 0) return rec;
+      identity.push(...rest.splice(at, 1));
+    }
+    return { ...rec, condition: { ...cond, all: [...identity, ...rest] } };
+  };
+
+  return reorder(node as Record<string, unknown>) as Condition;
 };
 
 /**

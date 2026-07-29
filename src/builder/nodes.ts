@@ -25,19 +25,22 @@ export const groupChildrenOf = (n: Condition): Condition[] => {
 
 export const nodeKey = (n: Condition, index: number): string => {
   const r = n as Rec;
-  return (r._groupId as string) ?? (r._id as string) ?? String(index);
+  return (r.__groupId as string) ?? (r.__id as string) ?? String(index);
 };
 
 const firstOperator = (
   field: BuilderField,
 ): { key: 'operator' | 'dateOperator'; op: string } | null => {
-  if (field.operators.field.length > 0) return { key: 'operator', op: field.operators.field[0] };
+  // A field with a date catalog (DateTime) seeds from it: its generic first
+  // operator is `equals`, a full-timestamp comparison a calendar-picked day
+  // almost never matches.
   if (field.operators.date.length > 0) return { key: 'dateOperator', op: field.operators.date[0] };
+  if (field.operators.field.length > 0) return { key: 'operator', op: field.operators.field[0] };
   return null;
 };
 
 export const ruleForField = (field: BuilderField, keepId?: string): Condition => {
-  const id = keepId ? { _id: keepId } : {};
+  const id = keepId ? { __id: keepId } : {};
   // A hoisted collection entry carries its own seed (array node + slice/operator).
   if (field.seed) return { ...(field.seed as object), ...id } as Condition;
   // A list/relation field is an array rule: a predicate/count/presence over its elements.
