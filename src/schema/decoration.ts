@@ -195,16 +195,15 @@ export const facetId = (facet: Facet): string => {
 };
 
 // A rehydrated node carries metadata the authored `where` never has (coerceType
-// from stampCoercions, `_`-prefixed editor keys like __id/__groupId — the same
-// prefix stripMeta strips). Drop it and sort keys so the leading-block comparison
-// is order- and coercion-insensitive.
-const isMetaKey = (key: string): boolean => key === 'coerceType' || key.startsWith('_');
+// from stampCoercions, _id/_groupId from the tree). Strip it and sort keys so the
+// leading-block comparison is order- and coercion-insensitive.
+const META = new Set(['coerceType', '_id', '_groupId']);
 const canonical = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(value as Record<string, unknown>).sort())
-      if (!isMetaKey(key)) out[key] = canonical((value as Record<string, unknown>)[key]);
+      if (!META.has(key)) out[key] = canonical((value as Record<string, unknown>)[key]);
     return out;
   }
   return value;
@@ -678,21 +677,15 @@ export const matchFacet = (
       } else break;
     }
     const lead = whereConditions(facet.where);
-    const destRec = dest.condition as { all?: Condition[]; any?: Condition[] } | undefined;
-    // A fixed `where` is identity only when AND-ed, so the subset check below reads
-    // `all` alone — an `any` group containing the where means something else.
-    const destConds = destRec?.all ?? [];
+    const destConds = (dest.condition as { all?: Condition[] } | undefined)?.all ?? [];
     if (lead.length === 0) {
       // A whereless collection has no identity block, so require the element leaf to
       // actually appear — otherwise any array node on this field would mislabel as
-      // this facet. A whole-collection facet (no leaf) has nothing to require. There
-      // is no identity clause to protect either, so the leaf may sit in whichever
-      // compound the group's ALL/ANY toggle produced.
+      // this facet. A whole-collection facet (no leaf) has nothing to require.
       const leafName = resolved.elementLeaf?.split('.').pop();
-      const conds = destRec?.all ?? destRec?.any ?? [];
       const applies =
         !resolved.elementLeaf ||
-        conds.some(
+        destConds.some(
           (c) => c && typeof c === 'object' && (c as { field?: string }).field === leafName,
         );
       if (applies && bestLead < 0) {

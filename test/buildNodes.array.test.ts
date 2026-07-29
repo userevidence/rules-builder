@@ -35,7 +35,7 @@ const build = (c: Condition) => {
 };
 
 const arrayRule = (over: Partial<Record<string, unknown>> = {}): Condition => ({
-  all: [{ field: 'orders', arrayOperator: 'notEmpty', __id: 'a', ...over }],
+  all: [{ field: 'orders', arrayOperator: 'notEmpty', _id: 'a', ...over }],
 });
 
 describe('buildRoot — array nodes', () => {
@@ -75,7 +75,7 @@ describe('buildRoot — array nodes', () => {
     const cond = arrayRule({
       arrayOperator: 'any',
       condition: {
-        all: [{ field: 'total', operator: 'greaterThan', value: 100, __id: 'c' }],
+        all: [{ field: 'total', operator: 'greaterThan', value: 100, _id: 'c' }],
       },
     });
     const a = build(cond).children[0] as ArrayNode;
@@ -126,14 +126,14 @@ describe('buildRoot — array nodes', () => {
 
   test('selecting a list field on a leaf converts it into an array rule', () => {
     const leafCond: Condition = {
-      all: [{ field: 'tier', operator: 'equals', value: 'gold', __id: 'a' }],
+      all: [{ field: 'tier', operator: 'equals', value: 'gold', _id: 'a' }],
     };
     const leaf = build(leafCond).children[0] as LeafNode;
     leaf.field.set('orders');
     const child = (committed as { all: Condition[] }).all[0] as Record<string, unknown>;
     expect(child.field).toBe('orders');
     expect(child.arrayOperator).toBeDefined();
-    expect(child.__id).toBe('a'); // identity preserved
+    expect(child._id).toBe('a'); // identity preserved
   });
 
   test('to-one relations are excluded from the field picker (only scalars + lists)', () => {

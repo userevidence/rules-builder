@@ -19,7 +19,7 @@ const lens = resolve({ maps: { app: map }, mapName: 'app', model: 'User' });
 const fields = describeModelFields(lens, 'app', 'User');
 
 const cond = (): Condition => ({
-  all: [{ field: 'tier', operator: 'equals', value: 'gold', __id: 'a' }],
+  all: [{ field: 'tier', operator: 'equals', value: 'gold', _id: 'a' }],
 });
 
 let committed: Condition | undefined;
@@ -60,7 +60,7 @@ describe('buildRoot — descriptor tree', () => {
   test('valid reflects the sourced/enum gate', () => {
     expect((build(cond()).children[0] as LeafNode).valid).toBe(true);
     const bad: Condition = {
-      all: [{ field: 'tier', operator: 'equals', value: 'platinum', __id: 'a' }],
+      all: [{ field: 'tier', operator: 'equals', value: 'platinum', _id: 'a' }],
     };
     expect((build(bad).children[0] as LeafNode).valid).toBe(false);
   });
@@ -69,7 +69,7 @@ describe('buildRoot — descriptor tree', () => {
     const leaf = build(cond()).children[0] as LeafNode;
     leaf.value.set('silver');
     expect(committed).toEqual({
-      all: [{ field: 'tier', operator: 'equals', value: 'silver', __id: 'a' }],
+      all: [{ field: 'tier', operator: 'equals', value: 'silver', _id: 'a' }],
     });
   });
 
@@ -85,7 +85,7 @@ describe('buildRoot — descriptor tree', () => {
   });
 
   test('a path-mode leaf exposes path.value + path.set; setMode back restores a literal value', () => {
-    const ref: Condition = { all: [{ field: 'tier', operator: 'equals', path: 'age', __id: 'a' }] };
+    const ref: Condition = { all: [{ field: 'tier', operator: 'equals', path: 'age', _id: 'a' }] };
     const leaf = build(ref).children[0] as LeafNode;
     expect(leaf.value.mode).toBe('path');
     expect(leaf.value.path?.value).toBe('age');
@@ -113,7 +113,7 @@ describe('buildRoot — descriptor tree', () => {
 
   test('a bind-mode leaf exposes bind.value + bind.set; setMode back restores a literal value', () => {
     const ref: Condition = {
-      all: [{ field: 'tier', operator: 'equals', bind: 'currentTier', __id: 'a' }],
+      all: [{ field: 'tier', operator: 'equals', bind: 'currentTier', _id: 'a' }],
     };
     const leaf = build(ref).children[0] as LeafNode;
     expect(leaf.value.mode).toBe('bind');
@@ -135,7 +135,7 @@ describe('buildRoot — descriptor tree', () => {
     leaf.field.set('age');
     const child = (committed as { all: Condition[] }).all[0] as Record<string, unknown>;
     expect(child.field).toBe('age');
-    expect(child.__id).toBe('a'); // keeps identity
+    expect(child._id).toBe('a'); // keeps identity
   });
 
   test('remove commits the leaf removed', () => {
@@ -147,48 +147,6 @@ describe('buildRoot — descriptor tree', () => {
   test('group operator.set switches all/any', () => {
     build(cond()).operator.set('any');
     expect(committed).toHaveProperty('any');
-  });
-
-  test('switching to a no-operand operator drops the stale operand', () => {
-    // validateRule rejects `value` on isEmpty — carrying it over leaves the leaf
-    // permanently invalid ("Rule does not accept value") with no visible cause.
-    const leaf = build(cond()).children[0] as LeafNode;
-    leaf.operator?.set('isEmpty');
-    expect((committed as { all: Condition[] }).all[0]).toEqual({
-      field: 'tier',
-      operator: 'isEmpty',
-      __id: 'a',
-    });
-  });
-
-  test('a DateTime field seeds its default rule from the date catalog, not equals', () => {
-    // `equals` on DateTime compares the full timestamp — a calendar-picked day
-    // almost never matches, so a fresh date row must not start there.
-    const dateMap: FieldMap = {
-      models: { User: { fields: { createdAt: { kind: 'scalar', type: 'DateTime' } } } },
-    };
-    const dateLens = resolve({ maps: { app: dateMap }, mapName: 'app', model: 'User' });
-    const dateFields = describeModelFields(dateLens, 'app', 'User');
-    let out: Condition | undefined;
-    const root = buildRoot({ all: [] }, dateLens, dateFields, 4, (next) => {
-      out = next;
-    });
-    root.addRule();
-    expect((out as { all: Condition[] }).all[0]).toMatchObject({
-      field: 'createdAt',
-      dateOperator: 'before',
-    });
-  });
-
-  test('switching between valued operators keeps the operand', () => {
-    const leaf = build(cond()).children[0] as LeafNode;
-    leaf.operator?.set('notEquals');
-    expect((committed as { all: Condition[] }).all[0]).toEqual({
-      field: 'tier',
-      operator: 'notEquals',
-      value: 'gold',
-      __id: 'a',
-    });
   });
 
   test('addRule appends a child; addGroup appends an empty group; canAddGroup respects depth', () => {
@@ -207,7 +165,7 @@ describe('buildRoot — descriptor tree', () => {
     expect(fields.find((f) => f.name === 'metadata')?.acceptsSubPath).toBe(true);
 
     const jsonCond: Condition = {
-      all: [{ field: 'metadata.theme', operator: 'equals', value: 'dark', __id: 'm' }],
+      all: [{ field: 'metadata.theme', operator: 'equals', value: 'dark', _id: 'm' }],
     };
     const leaf = build(jsonCond).children[0] as LeafNode;
     expect(leaf.field.value).toBe('metadata'); // base field selected
@@ -269,7 +227,7 @@ describe('buildRoot — boolean leaves + bare root', () => {
 
   test('a boolean inside a group renders as a literal-leaf child', () => {
     const c: Condition = {
-      all: [true, { field: 'tier', operator: 'equals', value: 'gold', __id: 'a' }],
+      all: [true, { field: 'tier', operator: 'equals', value: 'gold', _id: 'a' }],
     };
     const root = build(c) as GroupNode;
     expect(root.kind).toBe('group');

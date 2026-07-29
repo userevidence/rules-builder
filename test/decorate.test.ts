@@ -8,12 +8,12 @@ describe('switchGroupOperator', () => {
   test('toggles all → any preserving children and id', () => {
     const node = {
       all: [leaf('a'), leaf('b')],
-      __groupId: 'g1',
+      _groupId: 'g1',
     } as unknown as Condition;
     const next = switchGroupOperator(node, 'any') as unknown as Record<string, unknown>;
     expect(next.any).toHaveLength(2);
     expect('all' in next).toBe(false);
-    expect(next.__groupId).toBe('g1');
+    expect(next._groupId).toBe('g1');
   });
 
   test('throws on a non-compound', () => {
@@ -67,14 +67,14 @@ describe('trimEmptyGroups', () => {
 });
 
 describe('stripMeta', () => {
-  test('removes __id/__groupId deeply, leaving a clean Condition', () => {
+  test('removes _id/_groupId deeply, leaving a clean Condition', () => {
     const node = {
-      all: [{ field: 'a', operator: 'equals', value: 1, __id: 'r1' }],
-      __groupId: 'g1',
+      all: [{ field: 'a', operator: 'equals', value: 1, _id: 'r1' }],
+      _groupId: 'g1',
     } as unknown as Condition;
     const clean = stripMeta(node) as unknown as Record<string, unknown>;
-    expect('__groupId' in clean).toBe(false);
-    expect('__id' in (clean.all as Record<string, unknown>[])[0]).toBe(false);
+    expect('_groupId' in clean).toBe(false);
+    expect('_id' in (clean.all as Record<string, unknown>[])[0]).toBe(false);
     expect((clean.all as Record<string, unknown>[])[0]).toEqual({
       field: 'a',
       operator: 'equals',
@@ -111,7 +111,7 @@ describe('editor boundary: decorate in, strip out → DB form stays clean', () =
       })(),
     );
     // Decorated form carries ids (for React keys)...
-    expect(JSON.stringify(decorated)).toContain('__groupId');
+    expect(JSON.stringify(decorated)).toContain('_groupId');
     // ...but the round-trip back out is byte-identical to what went in.
     expect(stripMeta(decorated)).toEqual(clean);
   });
@@ -130,8 +130,8 @@ describe('withIds', () => {
     const second = withIds(first, () => `SHOULD_NOT_APPEAR`);
     expect(JSON.stringify(second)).toBe(firstJson);
     const rec = first as unknown as Record<string, unknown>;
-    expect(rec.__groupId).toBeDefined();
-    expect((rec.all as Record<string, unknown>[])[0].__id).toBeDefined();
+    expect(rec._groupId).toBeDefined();
+    expect((rec.all as Record<string, unknown>[])[0]._id).toBeDefined();
   });
 
   test('recurses into an array rule’s nested condition & filter', () => {
@@ -148,15 +148,15 @@ describe('withIds', () => {
     } as unknown as Condition;
     const out = withIds(node, () => `id${n++}`) as unknown as {
       all: {
-        __id: string;
-        condition: { __groupId: string; all: { __id: string }[] };
-        filter: { __groupId: string };
+        _id: string;
+        condition: { _groupId: string; all: { _id: string }[] };
+        filter: { _groupId: string };
       }[];
     };
     const arr = out.all[0];
-    expect(arr.__id).toBeDefined();
-    expect(arr.condition.__groupId).toBeDefined();
-    expect(arr.condition.all[0].__id).toBeDefined(); // nested leaf got an id
-    expect(arr.filter.__groupId).toBeDefined();
+    expect(arr._id).toBeDefined();
+    expect(arr.condition._groupId).toBeDefined();
+    expect(arr.condition.all[0]._id).toBeDefined(); // nested leaf got an id
+    expect(arr.filter._groupId).toBeDefined();
   });
 });

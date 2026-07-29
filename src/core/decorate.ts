@@ -8,23 +8,15 @@ const groupKey = (c: Rec): 'all' | 'any' | undefined =>
 
 const groupChildren = (c: Rec, key: 'all' | 'any'): Condition[] => c[key] as Condition[];
 
-/**
- * A compound's non-structural keys (`error`, `__groupId`, any future meta) — carry
- * these verbatim whenever a group is rebuilt around new children, so no rewrite
- * silently sheds an annotation.
- */
-export const groupMeta = (node: Condition): Record<string, unknown> => {
-  if (!isObj(node)) return {};
-  const { all: _all, any: _any, ...rest } = node as Rec;
-  return rest;
-};
-
 export const switchGroupOperator = (node: Condition, kind: 'all' | 'any'): Condition => {
   if (!isObj(node)) throw new Error('switchGroupOperator: not a compound');
   const rec = node as Rec;
   const key = groupKey(rec);
   if (!key) throw new Error('switchGroupOperator: node is not an all/any compound');
-  return { [kind]: groupChildren(rec, key), ...groupMeta(node) } as Condition;
+  const next: Rec = { [kind]: groupChildren(rec, key) };
+  if (rec._groupId !== undefined) next._groupId = rec._groupId;
+  if (rec.error !== undefined) next.error = rec.error;
+  return next as Condition;
 };
 
 const SUB_CONDITION_KEYS = ['condition', 'filter'] as const;
@@ -50,13 +42,14 @@ export const trimEmptyGroups = (node: Condition): Condition | undefined => {
     .map(trimEmptyGroups)
     .filter((c): c is Condition => c !== undefined);
   if (kept.length === 0) return undefined;
-  return { [key]: kept, ...groupMeta(node) } as Condition;
+  const next: Rec = { [key]: kept };
+  if (rec._groupId !== undefined) next._groupId = rec._groupId;
+  if (rec.error !== undefined) next.error = rec.error;
+  return next as Condition;
 };
 
-// Removes editor metadata deeply. Convention: internal/meta keys are `__`-prefixed
-// (`_` alone marks an unused binding, not a value); stripping on the `_` prefix
-// covers both and keeps this artifact-agnostic — usable on any tree (conditions,
-// maps, lenses, …).
+// Removes editor metadata deeply. Convention: meta keys are `_`-prefixed, so this
+// is artifact-agnostic — usable on any tree (conditions, maps, lenses, …).
 export const stripMeta = <T>(node: T): T => {
   if (!isObj(node as unknown)) return node;
   if (Array.isArray(node)) return node.map((x) => stripMeta(x)) as unknown as T;
@@ -79,13 +72,13 @@ export const withIds = (node: Condition, makeId: () => string = defaultMakeId): 
   const key = groupKey(rec);
   if (key) {
     const next: Rec = { ...rec, [key]: groupChildren(rec, key).map((c) => withIds(c, makeId)) };
-    if (next.__groupId === undefined) next.__groupId = makeId();
+    if (next._groupId === undefined) next._groupId = makeId();
     return next as Condition;
   }
   const next: Rec = { ...rec };
   for (const sub of SUB_CONDITION_KEYS) {
     if (isObj(next[sub])) next[sub] = withIds(next[sub] as Condition, makeId);
   }
-  if (next.__id === undefined) next.__id = makeId();
+  if (next._id === undefined) next._id = makeId();
   return next as Condition;
 };

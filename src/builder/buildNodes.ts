@@ -7,7 +7,7 @@ import {
   type Lens,
   type ValueShape,
 } from '@inixiative/json-rules';
-import { groupMeta, switchGroupOperator } from '../core/decorate';
+import { switchGroupOperator } from '../core/decorate';
 import { addRule, getNode, type RulePath, removeNode, setNode } from '../core/tree';
 import {
   type Decoration,
@@ -249,17 +249,10 @@ type Scope = { lens: Lens; fields: BuilderField[] };
  * vocabulary than the rule enforces.
  */
 const axisSiblings = (root: Condition, path: RulePath): Condition[] => {
-  const out: Condition[] = [];
-  for (let d = path.length - 1; d >= 0; d--) {
-    const parent = getNode(root, path.slice(0, d));
-    if (parent === undefined || !isGroupNode(parent)) break;
-    // An `any` parent's own children are disjuncts — they never pin. But clauses
-    // conjoined ABOVE the disjunction hold on every branch (e.g. a facet's locked
-    // where over a nested any-group), so the walk continues through it.
-    if (groupOperatorOf(parent) === 'all')
-      out.push(...groupChildrenOf(parent).filter((_, i) => i !== path[d]));
-  }
-  return out;
+  if (path.length === 0) return [];
+  const parent = getNode(root, path.slice(0, -1));
+  if (parent === undefined || !isGroupNode(parent) || groupOperatorOf(parent) !== 'all') return [];
+  return groupChildrenOf(parent).filter((_, i) => i !== path[path.length - 1]);
 };
 
 const pinField = (
@@ -356,7 +349,7 @@ const selectableFields = (fields: BuilderField[]): BuilderField[] =>
 
 const idOf = (n: Condition, index: number): string => {
   const r = n as Rec;
-  return (r.__groupId as string) ?? (r.__id as string) ?? String(index);
+  return (r._groupId as string) ?? (r._id as string) ?? String(index);
 };
 
 const buildLeaf = (
@@ -457,7 +450,7 @@ const buildLeaf = (
       set: (name) => {
         const next = scope.fields.find((f) => f.name === name);
         if (next)
-          ctx.commit(setNode(ctx.root, path, ruleForField(next, rec.__id as string | undefined)));
+          ctx.commit(setNode(ctx.root, path, ruleForField(next, rec._id as string | undefined)));
       },
       valid: fieldValid,
       acceptsSubPath: field?.acceptsSubPath,
@@ -477,21 +470,10 @@ const buildLeaf = (
       options: operatorOptions,
       set: (op) => {
         const isDate = field?.operators.date.includes(op as never) ?? false;
-        // A no-operand operator (isEmpty/isNotEmpty) must not inherit the previous
-        // operator's operand — validateRule rejects any value on it, leaving the
-        // leaf permanently invalid with no visible cause.
-        const dropOperand = valueShapeForOperator(op as never) === 'none';
-        const { operator: _o, dateOperator: _d, value: v, path: p, bind: b, ...rest } = rec;
+        const { operator: _o, dateOperator: _d, ...rest } = rec;
         ctx.commit(
           setNode(ctx.root, path, {
             ...rest,
-            ...(dropOperand
-              ? {}
-              : {
-                  ...(v !== undefined ? { value: v } : {}),
-                  ...(p !== undefined ? { path: p } : {}),
-                  ...(b !== undefined ? { bind: b } : {}),
-                }),
             [isDate ? 'dateOperator' : 'operator']: op,
           } as Condition),
         );
@@ -605,11 +587,7 @@ const buildArray = (
       root: subRoot,
       commit: (next) => ctx.commit(setNode(ctx.root, path, { ...rec, [key]: next } as Condition)),
     };
-    const group = buildGroup(subRoot, [], depth + 1, subCtx, relScope);
-    // A matched facet's `condition` group opens with the fixed where — its ALL/ANY
-    // toggle must never absorb that identity clause (see lockedGroupView).
-    const lead = key === 'condition' && matchedFacet ? leadingWhereCount(matchedFacet, node) : 0;
-    return lead ? lockedGroupView(group, subRoot, lead, subCtx.commit) : group;
+    return buildGroup(subRoot, [], depth + 1, subCtx, relScope);
   };
 
   // Aggregate target: the numeric scalar (or check()-only Json) on the RELATED model
@@ -636,7 +614,7 @@ const buildArray = (
       set: (name) => {
         const next = scope.fields.find((f) => f.name === name);
         if (!next) return;
-        const id = rec.__id ? { __id: rec.__id as string } : {};
+        const id = rec._id ? { _id: rec._id as string } : {};
         // In aggregate mode, re-pointing at another list relation keeps the aggregate
         // (mode/operator/value preserved) but clears the target field — its related
         // model changed. A non-list target falls back to the ordinary rule shape.
@@ -652,7 +630,7 @@ const buildArray = (
           );
           return;
         }
-        ctx.commit(setNode(ctx.root, path, ruleForField(next, rec.__id as string | undefined)));
+        ctx.commit(setNode(ctx.root, path, ruleForField(next, rec._id as string | undefined)));
       },
       valid: field !== undefined,
     },
@@ -794,9 +772,7 @@ const buildGroup = (
       ? modelDecor(ctx.decoration, ctx.anchorLens.mapName, ctx.anchorLens.model).label
       : undefined);
 
-  const lockedLead = branchFacet && branch ? leadingWhereCount(branchFacet, node) : 0;
-
-  const group: GroupNode = {
+  return {
     kind: 'group',
     id: idOf(node, path.length ? (path[path.length - 1] as number) : 0),
     path,
@@ -814,73 +790,9 @@ const buildGroup = (
     canAddGroup: depth < ctx.maxDepth,
     hoist: groupHoist,
     atomic: preset ? true : undefined,
-    lockedLeading: lockedLead || undefined,
+    lockedLeading:
+      branchFacet && branch ? leadingWhereCount(branchFacet, node) || undefined : undefined,
     remove: path.length ? () => ctx.commit(removeNode(ctx.root, path)) : undefined,
-  };
-  // A branch facet's group opens with the fixed where — its ALL/ANY toggle must
-  // never absorb that identity clause (see lockedGroupView).
-  return lockedLead
-    ? lockedGroupView(group, node, lockedLead, (next) => ctx.commit(setNode(ctx.root, path, next)))
-    : group;
-};
-
-/**
- * A facet's fixed `where` clauses are the node's identity — they must stay AND-ed no
- * matter what the group's visible ALL/ANY toggle says. Flipping the operator on the
- * whole group would OR the identity clause into the user's rows: the rule silently
- * changes meaning AND the node stops matching its facet (`matchFacet` reads the
- * identity from `all`). The toggle instead writes
- * `{ all: [...locked, { any: [...tail] }] }`, and this view flattens the nested tail
- * group back into the facet's row list, so a renderer still sees one flat group whose
- * operator reads `any`.
- */
-const lockedGroupView = (
-  group: GroupNode,
-  node: Condition,
-  lead: number,
-  commit: (next: Condition) => void,
-): GroupNode => {
-  const rec = node as { all?: Condition[]; any?: Condition[] };
-  const children = rec.all ?? rec.any ?? [];
-  // Everything non-structural (error, __groupId) survives the rewrite, exactly as
-  // switchGroupOperator preserves it on an ordinary toggle.
-  const meta = groupMeta(node);
-  // Nested-any state: exactly the locked prefix plus one trailing `any` group.
-  const tail = children.length === lead + 1 ? (children[lead] as { any?: Condition[] }) : undefined;
-  const tailAny = tail && Array.isArray(tail.any) ? tail.any : undefined;
-  const inner = tailAny ? (group.children[lead] as GroupNode | undefined) : undefined;
-  if (tailAny && inner?.kind === 'group') {
-    return {
-      ...group,
-      operator: {
-        value: 'any',
-        set: (op) => {
-          if (op !== 'all') return;
-          commit({
-            all: [...children.slice(0, lead), ...tailAny],
-            ...meta,
-          } as Condition);
-        },
-      },
-      // The nested group's children carry their real paths — edits land in place.
-      children: [...group.children.slice(0, lead), ...inner.children],
-      addRule: inner.addRule,
-      addGroup: inner.addGroup,
-      canAddGroup: inner.canAddGroup,
-    };
-  }
-  return {
-    ...group,
-    operator: {
-      value: group.operator.value,
-      set: (op) => {
-        if (op !== 'any') return group.operator.set(op);
-        commit({
-          all: [...children.slice(0, lead), { any: children.slice(lead) }],
-          ...meta,
-        } as Condition);
-      },
-    },
   };
 };
 
