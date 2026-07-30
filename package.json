@@ -21,7 +21,7 @@
     "example:build": "tsc --noEmit -p tsconfig.examples.json && vite build",
     "prepublishOnly": "bun run check && bun run build",
     "lint": "biome check .",
-    "prepare": "lefthook install; bun run build"
+    "prepare": "lefthook install"
   },
   "keywords": [
     "json-rules",
