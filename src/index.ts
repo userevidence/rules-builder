@@ -83,6 +83,7 @@ export {
   facetElementLeaf,
   facetId,
   isPreset,
+  leadingIdentityCount,
   leadingWhereCount,
   lensValuePicker,
   matchFacet,
@@ -96,6 +97,7 @@ export {
   validateDecoration,
   valueShapeForOperator,
   whereConditions,
+  writeSelectorClause,
 } from './schema';
 export type { SavedRule } from './serialize';
 export { parseSavedRule, stringifySavedRule } from './serialize';

@@ -8,6 +8,7 @@ export {
   facetElementLeaf,
   facetId,
   isPreset,
+  leadingIdentityCount,
   leadingWhereCount,
   matchFacet,
   modelDecor,
@@ -16,6 +17,7 @@ export {
   useFacetFields,
   validateDecoration,
   whereConditions,
+  writeSelectorClause,
 } from './decoration';
 export type { LensValueOption, LensValuePickerOptions } from './lensValuePicker';
 export { lensValuePicker, useLensValuePicker } from './lensValuePicker';

@@ -16,10 +16,12 @@ import {
   facetElementLeaf,
   facetId,
   isPreset,
+  leadingIdentityCount,
   leadingWhereCount,
   matchFacet,
   modelDecor,
   relabelRelations,
+  writeSelectorClause,
 } from '../schema/decoration';
 import type { BuilderField, SurfaceOptions } from '../schema/surface';
 import { describeModelFields, valueShapeForOperator } from '../schema/surface';
@@ -214,6 +216,16 @@ export type ArrayNode = {
    *  inside a source container) — a renderer draws these generically instead of
    *  hardcoding field paths. */
   selectors?: { field: string; label?: string; anyLabel?: string }[];
+  /** The canonical selector clauses (at most one per declared selector field),
+   *  hoisted OUT of `condition` so the rows toggle can never absorb them. A
+   *  renderer's selector dropdowns read and edit through these leaves; absent
+   *  when the node isn't in canonical shape (a legacy flat tree keeps its clause
+   *  inside `condition` until ingest normalizes it). */
+  selectorClauses?: LeafNode[];
+  /** Create/replace (value) or remove (`null`) the clause for a declared selector
+   *  field, preserving the canonical shape and the rows group's operator — a new
+   *  clause conjoins ABOVE the rows group, never inside it. */
+  setSelectorClause?: (field: string, value: unknown | null) => void;
   /** The related model the elements belong to (present for relation lists). */
   relation?: { mapName: string; modelName: string };
   /** Count operators (atLeast/atMost/exactly) → a numeric threshold. */
@@ -605,6 +617,7 @@ const buildArray = (
 
   // A nested condition/filter is a sub-tree: build it over its own root, and on
   // every commit splice the whole sub-condition back under the array rule's key.
+  let selectorClauseLeaves: LeafNode[] | undefined;
   const buildSub = (key: 'condition' | 'filter'): GroupNode => {
     const subRoot = asGroupRoot((rec[key] as Condition | undefined) ?? { all: [] });
     const subCtx: Ctx = {
@@ -619,14 +632,26 @@ const buildArray = (
     // changes what the user sees — and breaks the bind — instead of silently
     // absorbing a hidden clause.
     if (key === 'condition' && matchedFacet) {
-      const lead = leadingWhereCount(matchedFacet, node);
+      // The identity block is the fixed `where` prefix plus the selector clauses
+      // right after it — a selector-backed facet (survey question, badge name)
+      // has user-picked identity the `where` machinery can't know about.
+      const lead = leadingIdentityCount(matchedFacet, node);
       const kids = (subRoot as { all?: Condition[] }).all ?? [];
       const tail = kids[lead];
-      if (lead > 0 && kids.length === lead + 1 && tail && isGroupNode(tail))
+      if (lead > 0 && kids.length === lead + 1 && tail && isGroupNode(tail)) {
+        // Selector clauses get real leaf nodes even though they sit OUTSIDE the
+        // rows group — the renderer's selector dropdowns read and write through
+        // them (value/options/remove), while the toggle below can only ever
+        // re-key the rows group.
+        const whereLead = leadingWhereCount(matchedFacet, node);
+        selectorClauseLeaves = kids
+          .slice(whereLead, lead)
+          .map((clause, i) => buildLeaf(clause, [whereLead + i], depth + 1, subCtx, relScope));
         // A condition surface is never removable (matching the sub-root contract):
         // without the override, the rows group's own remove would leak here and
         // delete every user row in one gesture, stranding the hidden identity.
         return { ...buildGroup(tail, [lead], depth + 1, subCtx, relScope), remove: undefined };
+      }
     }
     return buildGroup(subRoot, [], depth + 1, subCtx, relScope);
   };
@@ -638,6 +663,14 @@ const buildArray = (
   const aggregateValidation = isAggregate
     ? validateAggregate(rec, field, aggTargetField)
     : undefined;
+
+  // Built ahead of the node literal: `buildSub('condition')` is what fills
+  // `selectorClauseLeaves`, and the literal reads that capture further up.
+  const conditionNode =
+    rel && (isAggregate || cat === 'predicate' || cat === 'count')
+      ? buildSub('condition')
+      : undefined;
+  const filterNode = rel && !isAggregate ? buildSub('filter') : undefined;
 
   return {
     kind: 'array',
@@ -683,6 +716,20 @@ const buildArray = (
         }
       : undefined,
     selectors: matchedFacet?.selectors,
+    selectorClauses: selectorClauseLeaves,
+    setSelectorClause:
+      matchedFacet?.selectors?.length && rel && !isAggregate
+        ? (selectorField, value) => {
+            if (!matchedFacet.selectors?.some((s) => s.field === selectorField)) return;
+            const next = writeSelectorClause(
+              matchedFacet,
+              rec.condition as Condition | undefined,
+              selectorField,
+              value,
+            );
+            ctx.commit(setNode(ctx.root, path, { ...rec, condition: next } as Condition));
+          }
+        : undefined,
     facetMode: facetModeControl(matchedFacet, rec, path, ctx),
     atomic: matchedFacet && isPreset(matchedFacet) ? true : undefined,
     // Element-mode operator: absent on an aggregate node (it carries `aggregate`).
@@ -754,13 +801,10 @@ const buildArray = (
         : undefined,
     // Element predicate (element mode) OR aggregate window (aggregate mode) — both
     // ride the same `condition` sub-builder scoped to the related model.
-    condition:
-      rel && (isAggregate || cat === 'predicate' || cat === 'count')
-        ? buildSub('condition')
-        : undefined,
+    condition: conditionNode,
     // `filter` is authored windowing — offered on element rules, never on an
     // aggregate (toPrisma() rejects windowing on aggregates).
-    filter: rel && !isAggregate ? buildSub('filter') : undefined,
+    filter: filterNode,
     removeFilter:
       rel && !isAggregate
         ? () => {
