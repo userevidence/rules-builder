@@ -1,6 +1,6 @@
 {
   "name": "@inixiative/rules-builder",
-  "version": "0.23.1",
+  "version": "0.24.0",
   "description": "Visual rule builder for @inixiative/json-rules",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -21,7 +21,7 @@
     "example:build": "tsc --noEmit -p tsconfig.examples.json && vite build",
     "prepublishOnly": "bun run check && bun run build",
     "lint": "biome check .",
-    "prepare": "lefthook install"
+    "prepare": "lefthook install; bun run build"
   },
   "keywords": [
     "json-rules",
