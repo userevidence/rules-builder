@@ -332,14 +332,59 @@ const selectorClauseField = (facet: Facet, cond: Condition): string | undefined 
 const isSelectorClause = (facet: Facet, cond: Condition): boolean =>
   selectorClauseField(facet, cond) !== undefined;
 
+/** {@link selectorClauseField} with the positional rule the live surfaces share:
+ *  a clause in the FINAL position is never the selector's — a canonical tree
+ *  always ends with the rows group, so whatever sits last is the rows surface
+ *  (a compound) or an ordinary row (a leaf the collapse would have nothing to
+ *  present after). This keeps read and write agreeing: what renders as a row is
+ *  never replaced or deleted by the dropdown. Ingest normalization is the one
+ *  order-tolerant claimer and uses its own, lenient rule. */
+const selectorClauseAt = (facet: Facet, conds: Condition[], index: number): string | undefined => {
+  const cond = conds[index];
+  if (!cond || index === conds.length - 1) return undefined;
+  return selectorClauseField(facet, cond);
+};
+
+/**
+ * Whether selector identity applies to this facet at all: only where the
+ * machinery can actually see the clause — a BRANCH group (identity sits at the
+ * top of the group itself) or a SINGLE-hop collection (the facet's block is the
+ * node's own condition). A multi-hop collection's block lives down a traversal
+ * chain the builder renders as nested nodes; recognition, normalization, and
+ * the write seam all stay hands-off there, so nothing is ever claimed, hidden,
+ * or written at the wrong model scope. Presets are atomic: never.
+ */
+export const selectorsApply = (lens: Lens, facet: Facet): boolean => {
+  if (!facet.selectors?.length || isPreset(facet)) return false;
+  const resolved = resolvePath(lens, facet.path);
+  if (!resolved) return false;
+  if (resolved.kind === 'branch') return true;
+  if (resolved.kind !== 'collection') return false;
+  // Zero inner hops: the element leaf must not cross another list relation.
+  let { mapName, modelName } = resolved.target;
+  for (const seg of resolved.elementLeaf?.split('.') ?? []) {
+    const entry = lens.maps[mapName]?.models[modelName]?.fields[seg];
+    if (!entry) return true; // a Json sub-path tail — no list left to cross
+    if (entry.isList) return false;
+    const target = relationTarget(entry, mapName);
+    if (!target) return true;
+    mapName = target.mapName;
+    modelName = target.modelName;
+  }
+  return true;
+};
+
 /** {@link leadingWhereCount} generalized to the full identity block: the fixed
  *  `where` prefix plus — immediately after it — the first clause per declared
  *  selector field. A selector clause is identity the `where` machinery can't see
  *  (it's user-picked data, not decoration), yet absorbing it into an `any` breaks
  *  the facet's meaning exactly the same way — "answered the question at all OR
  *  gave one of these answers". Duplicate clauses on a selector field stay
- *  ordinary rows (only the first is the selector's own knob). */
-export const leadingIdentityCount = (facet: Facet, node: Condition): number => {
+ *  ordinary rows (only the first is the selector's own knob). Where selectors
+ *  don't apply ({@link selectorsApply} — multi-hop collections, presets), this
+ *  is exactly {@link leadingWhereCount}. */
+export const leadingIdentityCount = (lens: Lens, facet: Facet, node: Condition): number => {
+  if (!selectorsApply(lens, facet)) return leadingWhereCount(facet, node);
   const whereLead = whereConditions(facet.where);
   const rec = node as { condition?: Condition; all?: Condition[] };
   // Identity counts only inside an `all` compound — in an `any`, the clauses are
@@ -351,8 +396,7 @@ export const leadingIdentityCount = (facet: Facet, node: Condition): number => {
   let count = whereLead.length;
   const seen = new Set<string>();
   while (count < conds.length) {
-    const cond = conds[count];
-    const field = cond ? selectorClauseField(facet, cond) : undefined;
+    const field = selectorClauseAt(facet, conds, count);
     if (field === undefined || seen.has(field)) break;
     seen.add(field);
     count += 1;
@@ -785,7 +829,9 @@ export const matchFacet = (
       //  - the element leaf inside a trailing rows group (the canonical shape —
       //    selector clauses leading, rows nested one level down),
       //  - a clause on a declared selector field (a picked-question-only rule has
-      //    no answer leaf at all, yet is unmistakably this facet).
+      //    no answer leaf at all, yet is unmistakably this facet) — only where
+      //    selectors apply, so a clause at the wrong hop level of a multi-hop
+      //    facet never marks the node.
       // A whole-collection facet (no leaf, no selectors) has nothing to require.
       const leafName = resolved.elementLeaf?.split('.').pop();
       const conds = destRec?.all ?? destRec?.any ?? [];
@@ -797,7 +843,7 @@ export const matchFacet = (
         !resolved.elementLeaf ||
         conds.some(isLeafOn) ||
         tailRows.some(isLeafOn) ||
-        conds.some((c) => isSelectorClause(facet, c));
+        (selectorsApply(lens, facet) && conds.some((c) => isSelectorClause(facet, c)));
       if (applies && bestLead < 0) {
         best = facet;
         bestLead = 0;
@@ -836,7 +882,7 @@ export const stampFacetIds = (
     const facet = matchFacet(lens, decoration, next as Condition);
     if (facet) {
       if (!isPreset(facet))
-        next = normalizeFacetShape(facet, next as Condition) as Record<string, unknown>;
+        next = normalizeFacetShape(lens, facet, next as Condition) as Record<string, unknown>;
       next.__facetId = facetId(facet);
     }
   }
@@ -857,9 +903,11 @@ export const stampFacetIds = (
  * never change (`all` is order-independent and the wrap is a conjunction of one
  * group).
  */
-const normalizeFacetShape = (facet: Facet, node: Condition): Condition => {
+const normalizeFacetShape = (lens: Lens, facet: Facet, node: Condition): Condition => {
   const lead = whereConditions(facet.where);
-  const selectorFields = (facet.selectors ?? []).map((s) => s.field);
+  const selectorFields = selectorsApply(lens, facet)
+    ? (facet.selectors ?? []).map((s) => s.field)
+    : [];
   if (lead.length === 0 && selectorFields.length === 0) return node;
 
   // Claim each identity clause (any position), wrap what remains as the rows
@@ -875,9 +923,15 @@ const normalizeFacetShape = (facet: Facet, node: Condition): Condition => {
     // The `where` block is mandatory identity; a selector clause is optional
     // (nothing picked yet is a legitimate state) and only the FIRST clause per
     // field hoists — a duplicate is an ordinary row the renderer must keep
-    // visible, not a second hidden knob.
+    // visible, not a second hidden knob. Claiming is order-tolerant (a legacy
+    // flat tree may hold the clause anywhere, including last) with one carve-out:
+    // a trailing COMPOUND is the rows-group candidate, never a claimable clause.
     for (const field of selectorFields) {
-      const at = rest.findIndex((c) => selectorClauseField(facet, c) === field);
+      const at = rest.findIndex(
+        (c, i) =>
+          selectorClauseField(facet, c) === field &&
+          !(i === rest.length - 1 && groupChildren(c) !== undefined),
+      );
       if (at >= 0) identity.push(...rest.splice(at, 1));
     }
     // Nothing claimable (a selector-backed facet before any pick): the flat rows
@@ -917,21 +971,29 @@ const normalizeFacetShape = (facet: Facet, node: Condition): Condition => {
 };
 
 /**
- * Write a selector clause into a group-shaped block, preserving the canonical
- * shape and the rows group's own operator. `value: null` removes the clause; an
- * array value writes an `in` clause (the multi-pick form of the selector). This
- * is the ONE write seam for selector dropdowns: an existing clause is replaced
- * at its position; a new clause lands in the identity block ABOVE the rows
- * group — never inside it — so a prior ALL/ANY toggle keeps meaning what it said:
- * `{ any: rows }` becomes `{ all: [clause, { any: rows }] }`, not
- * `{ any: [clause, ...rows] }`. A same-field clause counts as the selector's own
- * ONLY when conjoined — inside an `any` it is a disjunct meaning something else,
- * so it is never replaced or removed; a write conjoins outside and the disjunct
- * stays an honestly visible row. Branch facets write here directly (their
- * identity sits at the top of the group itself); collection facets go through
- * {@link writeSelectorClause}, which descends the traversal chain first.
+ * Write a selector clause into a facet's group-shaped block, preserving the
+ * canonical shape and the rows group's own operator. `value: null` removes the
+ * clause; an array value writes an `in` clause (the multi-pick form of the
+ * selector). This is the ONE write seam for selector dropdowns: an existing
+ * clause is replaced at its position; a new clause lands in the identity block
+ * ABOVE the rows group — never inside it — so a prior ALL/ANY toggle keeps
+ * meaning what it said: `{ any: rows }` becomes `{ all: [clause, { any: rows }] }`,
+ * not `{ any: [clause, ...rows] }`. Three things are never touched:
+ *  - a disjunct: a same-field clause counts as the selector's own ONLY when
+ *    conjoined — inside an `any` it means something else, so a write conjoins
+ *    outside and the disjunct stays an honestly visible row;
+ *  - the fixed `where`: the search starts after the where prefix, so identity
+ *    the decoration owns can never be replaced or deleted through the dropdown,
+ *    even when the where sits on a declared selector field;
+ *  - the trailing rows group: a compound in the final position is the rows
+ *    surface, never a claimable clause, even when its children are uniform on
+ *    the selector field.
+ * Writes go at the block the caller hands over — a branch group's own top, or a
+ * single-hop collection node's `condition`. Multi-hop collections never reach
+ * here ({@link selectorsApply}): their block lives down a traversal chain and
+ * the builder offers no selector seam there.
  */
-export const writeSelectorClauseInGroup = (
+export const writeSelectorClause = (
   facet: Facet,
   condition: Condition | undefined,
   field: string,
@@ -941,12 +1003,22 @@ export const writeSelectorClauseInGroup = (
   const rec = cond as Record<string, unknown>;
   const key = Array.isArray(rec.all) ? 'all' : Array.isArray(rec.any) ? 'any' : undefined;
   const children: Condition[] = key ? [...(rec[key] as Condition[])] : [];
-  const at =
-    key === 'all' ? children.findIndex((c) => selectorClauseField(facet, c) === field) : -1;
+  // The where prefix is off-limits: the selector's clause can only live after it.
+  const whereLead = whereConditions(facet.where);
+  const whereBlock =
+    key === 'all' && whereLead.length > 0 && isLeadingPrefix(whereLead, children)
+      ? whereLead.length
+      : 0;
+  const found =
+    key === 'all'
+      ? children.findIndex(
+          (_c, i) => i >= whereBlock && selectorClauseAt(facet, children, i) === field,
+        )
+      : -1;
 
   if (value === null) {
-    if (at < 0 || !key) return cond;
-    children.splice(at, 1);
+    if (found < 0 || !key) return cond;
+    children.splice(found, 1);
     // A whereless facet whose identity was just cleared may leave a lone rows
     // group behind — `{ all: [{ any: rows }] }` unwraps to `{ any: rows }`, so
     // the toggle surface is the group itself again.
@@ -956,8 +1028,8 @@ export const writeSelectorClauseInGroup = (
       children.length === 1 &&
       only &&
       groupChildren(only) !== undefined &&
-      whereConditions(facet.where).length === 0 &&
-      !children.some((c) => isSelectorClause(facet, c))
+      whereLead.length === 0 &&
+      children.findIndex((_c, i) => selectorClauseAt(facet, children, i) !== undefined) < 0
     )
       return only;
     return { ...rec, [key]: children } as Condition;
@@ -968,9 +1040,9 @@ export const writeSelectorClauseInGroup = (
   // and coercion stamping happens at emit.
   const clause = { field, operator: Array.isArray(value) ? 'in' : 'equals', value } as Condition;
 
-  if (at >= 0) {
+  if (found >= 0) {
     // Replace at position — the canonical shape is preserved.
-    children[at] = clause;
+    children[found] = clause;
     return { ...rec, [key as string]: children } as Condition;
   }
 
@@ -982,12 +1054,10 @@ export const writeSelectorClauseInGroup = (
   // An `all` group: insert at the end of the present identity block (the fixed
   // `where` prefix, then existing selector clauses), and wrap whatever follows as
   // the one trailing rows group the canonical shape requires.
-  const whereLead = whereConditions(facet.where);
-  let block = whereLead.length > 0 && isLeadingPrefix(whereLead, children) ? whereLead.length : 0;
+  let block = whereBlock;
   const seen = new Set<string>();
   while (block < children.length) {
-    const next = children[block];
-    const nextField = next ? selectorClauseField(facet, next) : undefined;
+    const nextField = selectorClauseAt(facet, children, block);
     if (nextField === undefined || seen.has(nextField)) break;
     seen.add(nextField);
     block += 1;
@@ -999,37 +1069,6 @@ export const writeSelectorClauseInGroup = (
       ? rest[0]
       : ({ all: rest } as Condition);
   return { ...rec, all: [...identity, clause, tail] } as Condition;
-};
-
-/**
- * {@link writeSelectorClauseInGroup} for a collection facet node's `condition`:
- * descends the traversal chain (each hop a single nested array child, exactly as
- * matching and normalization do) so the clause lands in the innermost block —
- * the element model the selector's field resolves against — never on an outer
- * hop where the field doesn't exist.
- */
-export const writeSelectorClause = (
-  facet: Facet,
-  condition: Condition | undefined,
-  field: string,
-  value: unknown,
-): Condition => {
-  const cond = condition ?? ({ all: [] } as Condition);
-  const cs = (cond as { all?: Condition[] }).all;
-  const sole = cs?.length === 1 && cs[0] && typeof cs[0] === 'object' ? cs[0] : undefined;
-  if (
-    sole &&
-    'arrayOperator' in sole &&
-    (sole as { condition?: unknown }).condition !== undefined
-  ) {
-    const hop = sole as Record<string, unknown>;
-    const next = writeSelectorClause(facet, hop.condition as Condition, field, value);
-    return {
-      ...(cond as Record<string, unknown>),
-      all: [{ ...hop, condition: next } as Condition],
-    } as Condition;
-  }
-  return writeSelectorClauseInGroup(facet, cond, field, value);
 };
 
 /**

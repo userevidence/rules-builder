@@ -21,8 +21,8 @@ import {
   matchFacet,
   modelDecor,
   relabelRelations,
+  selectorsApply,
   writeSelectorClause,
-  writeSelectorClauseInGroup,
 } from '../schema/decoration';
 import type { BuilderField, SurfaceOptions } from '../schema/surface';
 import { describeModelFields, valueShapeForOperator } from '../schema/surface';
@@ -648,19 +648,34 @@ const buildArray = (
       // The identity block is the fixed `where` prefix plus the selector clauses
       // right after it — a selector-backed facet (survey question, badge name)
       // has user-picked identity the `where` machinery can't know about.
-      const lead = leadingIdentityCount(matchedFacet, node);
+      const lead = leadingIdentityCount(ctx.anchorLens, matchedFacet, node);
       const kids = (subRoot as { all?: Condition[] }).all ?? [];
       const tail = kids[lead];
       if (lead > 0 && kids.length === lead + 1 && tail && isGroupNode(tail)) {
         // Selector clauses get real builder nodes even though they sit OUTSIDE
         // the rows group — the renderer's selector dropdowns read and write
-        // through them (value/options/remove; a complex OR-block selector comes
-        // back as a group), while the toggle below can only ever re-key the
-        // rows group.
+        // through them (value/options; a complex OR-block selector comes back as
+        // a group), while the toggle below can only ever re-key the rows group.
+        // Their remove routes through the write seam so both removal gestures
+        // land on the same shape (unwrap included).
         const whereLead = leadingWhereCount(matchedFacet, node);
-        selectorClauseNodes = kids
-          .slice(whereLead, lead)
-          .map((clause, i) => buildNode(clause, [whereLead + i], depth + 1, subCtx, relScope));
+        const clauseSlice = kids.slice(whereLead, lead);
+        selectorClauseNodes = clauseSlice.length
+          ? clauseSlice.map((clause, i) => {
+              const built = buildNode(clause, [whereLead + i], depth + 1, subCtx, relScope);
+              // An OR-block clause carries its field on its (uniform) children.
+              const clauseField =
+                (clause as { field?: string }).field ??
+                (groupChildrenOf(clause)[0] as { field?: string } | undefined)?.field;
+              return clauseField
+                ? {
+                    ...built,
+                    remove: () =>
+                      subCtx.commit(writeSelectorClause(matchedFacet, subRoot, clauseField, null)),
+                  }
+                : built;
+            })
+          : undefined;
         // A condition surface is never removable (matching the sub-root contract):
         // without the override, the rows group's own remove would leak here and
         // delete every user row in one gesture, stranding the hidden identity.
@@ -685,6 +700,20 @@ const buildArray = (
       ? buildSub('condition')
       : undefined;
   const filterNode = rel && !isAggregate ? buildSub('filter') : undefined;
+
+  // The selector seam exists only where every part of it is real: the facet's
+  // selectors must apply here ({@link selectorsApply} — single-hop, non-preset),
+  // and the node must actually render a condition surface. A presence node
+  // (empty/notEmpty) has no condition — offering a write into a subtree the
+  // engine ignores and the builder never shows would hide dead data in the rule.
+  const selectorFacet =
+    matchedFacet?.selectors?.length &&
+    rel &&
+    !isAggregate &&
+    conditionNode !== undefined &&
+    selectorsApply(ctx.anchorLens, matchedFacet)
+      ? matchedFacet
+      : undefined;
 
   return {
     kind: 'array',
@@ -729,21 +758,20 @@ const buildArray = (
           icon: matchedFacet.icon,
         }
       : undefined,
-    selectors: matchedFacet?.selectors,
-    selectorClauses: selectorClauseNodes,
-    setSelectorClause:
-      matchedFacet?.selectors?.length && rel && !isAggregate
-        ? (selectorField, value) => {
-            if (!matchedFacet.selectors?.some((s) => s.field === selectorField)) return;
-            const next = writeSelectorClause(
-              matchedFacet,
-              rec.condition as Condition | undefined,
-              selectorField,
-              value,
-            );
-            ctx.commit(setNode(ctx.root, path, { ...rec, condition: next } as Condition));
-          }
-        : undefined,
+    selectors: selectorFacet?.selectors,
+    selectorClauses: selectorFacet ? selectorClauseNodes : undefined,
+    setSelectorClause: selectorFacet
+      ? (selectorField, value) => {
+          if (!selectorFacet.selectors?.some((s) => s.field === selectorField)) return;
+          const next = writeSelectorClause(
+            selectorFacet,
+            rec.condition as Condition | undefined,
+            selectorField,
+            value,
+          );
+          ctx.commit(setNode(ctx.root, path, { ...rec, condition: next } as Condition));
+        }
+      : undefined,
     facetMode: facetModeControl(matchedFacet, rec, path, ctx),
     atomic: matchedFacet && isPreset(matchedFacet) ? true : undefined,
     // Element-mode operator: absent on an aggregate node (it carries `aggregate`).
@@ -877,42 +905,52 @@ const buildGroup = (
   // the whole unit. Any other matched shape renders raw under the badge: nothing
   // hidden, so a toggle honestly changes what the user sees — and breaks the
   // bind — instead of silently absorbing a hidden clause.
-  const identityLead = branchFacet && branch ? leadingIdentityCount(branchFacet, node) : 0;
+  const identityLead =
+    branchFacet && branch ? leadingIdentityCount(ctx.anchorLens, branchFacet, node) : 0;
   const kids = groupChildrenOf(node);
   const rowsTail = kids[identityLead];
   // Branch identity is conjoined at the top of the group itself, so the selector
-  // write seam targets the group directly — no traversal chain to descend.
-  const setGroupSelectorClause =
-    branchFacet?.selectors?.length && branch
-      ? (selectorField: string, value: unknown | null) => {
-          if (!branchFacet.selectors?.some((s) => s.field === selectorField)) return;
-          ctx.commit(
-            setNode(
-              ctx.root,
-              path,
-              writeSelectorClauseInGroup(branchFacet, node, selectorField, value),
-            ),
-          );
-        }
+  // write seam targets the group directly.
+  const selectorGroupFacet =
+    branchFacet?.selectors?.length && branch && selectorsApply(ctx.anchorLens, branchFacet)
+      ? branchFacet
       : undefined;
+  const setGroupSelectorClause = selectorGroupFacet
+    ? (selectorField: string, value: unknown | null) => {
+        if (!selectorGroupFacet.selectors?.some((s) => s.field === selectorField)) return;
+        ctx.commit(
+          setNode(
+            ctx.root,
+            path,
+            writeSelectorClause(selectorGroupFacet, node, selectorField, value),
+          ),
+        );
+      }
+    : undefined;
   if (identityLead > 0 && kids.length === identityLead + 1 && rowsTail && isGroupNode(rowsTail)) {
     // Selector clauses get real builder nodes even though they sit outside the
     // rows surface (see the collection collapse in buildArray) — dropdowns read
     // and write through them while the toggle can only re-key the rows group.
+    // Their remove routes through the write seam so both removal gestures land
+    // on the same shape.
     const whereLead = branchFacet ? leadingWhereCount(branchFacet, node) : 0;
     const inner = buildGroup(rowsTail, [...path, identityLead], depth, ctx, groupScope);
     return {
       ...inner,
       label: groupLabel ?? inner.label,
       hoist: groupHoist,
-      selectors: branchFacet?.selectors,
+      selectors: selectorGroupFacet?.selectors,
       selectorClauses:
-        identityLead > whereLead
-          ? kids
-              .slice(whereLead, identityLead)
-              .map((clause, i) =>
-                buildNode(clause, [...path, whereLead + i], depth, ctx, groupScope),
-              )
+        selectorGroupFacet && identityLead > whereLead
+          ? kids.slice(whereLead, identityLead).map((clause, i) => {
+              const built = buildNode(clause, [...path, whereLead + i], depth, ctx, groupScope);
+              const clauseField =
+                (clause as { field?: string }).field ??
+                (groupChildrenOf(clause)[0] as { field?: string } | undefined)?.field;
+              return clauseField
+                ? { ...built, remove: () => setGroupSelectorClause?.(clauseField, null) }
+                : built;
+            })
           : undefined,
       setSelectorClause: setGroupSelectorClause,
       facetMode: facetModeControl(groupFacet, node as Rec, path, ctx),
@@ -939,7 +977,7 @@ const buildGroup = (
     hoist: groupHoist,
     atomic: preset ? true : undefined,
     facetMode: facetModeControl(groupFacet, node as Rec, path, ctx),
-    selectors: branchFacet?.selectors,
+    selectors: selectorGroupFacet?.selectors,
     setSelectorClause: setGroupSelectorClause,
     remove: path.length ? () => ctx.commit(removeNode(ctx.root, path)) : undefined,
   };

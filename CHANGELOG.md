@@ -25,12 +25,29 @@
   an honestly visible row. (An already-corrupted `any` tree still matches and
   renders raw, unrewritten — repair is a migration, not a silent load-time
   semantic change.)
+- **The seam never crosses a structural boundary** (adversarial findings):
+  selectors apply only where the machinery can actually see the clause — a
+  branch group or a SINGLE-hop collection (`selectorsApply`). A multi-hop
+  collection's block lives down a traversal chain the builder renders as nested
+  nodes, so recognition, normalization, and the write seam all stay hands-off
+  there: badge and raw rendering only, and a nested-array user row can never be
+  mistaken for a traversal hop. The fixed `where` is untouchable even when it
+  sits on the declared selector field (the clause search starts after the where
+  prefix). On the live surfaces a clause in the FINAL position is never the
+  selector's (a canonical tree always ends with the rows group), so what
+  renders as a row is never replaced or deleted by a dropdown gesture. The
+  seam exists only where every part of it is real: never on presence nodes
+  (no condition surface) and never on presets (atomic). A hoisted clause
+  node's `remove()` routes through the seam, so both removal gestures land on
+  the same shape.
 - **Complex selectors**: an internal OR block whose every child is a leaf on
   the same declared selector field (`{ any: [q=Q1, q=Q2] }`) IS the selector's
   clause — hoisted as its own block so the rows toggle can't absorb it, and
   surfaced through `selectorClauses` as a group.
-- Exported: `leadingIdentityCount` (the `where` prefix plus the selector
-  clauses right after it), `writeSelectorClause`, `writeSelectorClauseInGroup`.
+- Exported: `leadingIdentityCount(lens, facet, node)` (the `where` prefix plus
+  the selector clauses right after it; plain `leadingWhereCount` where selectors
+  don't apply), `writeSelectorClause` (one block-level seam for both node
+  kinds), `selectorsApply`.
 
 ## 0.23.1 — adversarial fixes: disjunct identity never matches; no remove on the rows surface
 

@@ -367,6 +367,22 @@ describe('branch facet with selectors — identity hoists and the graft still la
     });
   });
 
+  test('the branch clause node remove() routes through the write seam', () => {
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: branchSource,
+        decoration,
+        defaultValue: {
+          all: [{ all: [branchWhere as Condition, typeClause('startup'), arrRow] }],
+        } as Condition,
+      }),
+    );
+    act(() => group(result.current).selectorClauses?.[0]?.remove?.());
+    expect(savedGroup(result.current)).toEqual({
+      all: [expect.objectContaining(branchWhere), { all: [expect.objectContaining(arrRow)] }],
+    });
+  });
+
   test('the group write seam replaces and clears at the top of the group itself', () => {
     const { result } = renderHook(() =>
       useRuleBuilder({
@@ -392,7 +408,7 @@ describe('branch facet with selectors — identity hoists and the graft still la
   });
 });
 
-describe('multi-hop collection — the clause lands in the innermost block', () => {
+describe('multi-hop collection — selector machinery is fenced off entirely', () => {
   const deepMap: FieldMap = {
     models: {
       User: { fields: { accounts: { kind: 'object', type: 'Account', isList: true } } },
@@ -417,49 +433,260 @@ describe('multi-hop collection — the clause lands in the innermost block', () 
     ],
   };
 
-  test('setSelectorClause descends the traversal chain — never the outer hop', () => {
+  test('the badge shows but no selector seam is offered — the block lives down a chain the builder cannot present', () => {
+    // The facet's canonical block is at the innermost traversal level; the outer
+    // node's dropdown could neither read it back (the collapse works on the
+    // node's own condition) nor write it safely (a lookalike nested row is
+    // indistinguishable from a traversal hop by shape). selectorsApply fences
+    // the whole machinery: recognition never claims the clause, nothing hides,
+    // and the chain renders raw under the badge.
+    const before: Condition = {
+      all: [
+        {
+          field: 'accounts',
+          arrayOperator: 'any',
+          condition: {
+            all: [
+              {
+                field: 'surveys',
+                arrayOperator: 'any',
+                condition: { all: [question('Q1'), answer('A')] },
+              } as Condition,
+            ],
+          },
+        } as Condition,
+      ],
+    } as Condition;
+    const { result } = renderHook(() =>
+      useRuleBuilder({ source: deepSource, decoration: deepView, defaultValue: before }),
+    );
+    const node = facetNode(result.current);
+    expect(node.hoist?.label).toBe('Account Surveys');
+    expect(node.selectors).toBeUndefined();
+    expect(node.selectorClauses).toBeUndefined();
+    expect(node.setSelectorClause).toBeUndefined();
+    // The innermost question clause stays an ordinary, visible row — never
+    // claimed as identity, never re-shaped at ingest.
+    const inner = (savedNode(result.current).condition as { all: Condition[] }).all[0] as {
+      condition: { all?: Condition[] };
+    };
+    expect(inner.condition.all).toHaveLength(2);
+  });
+});
+
+describe('the write seam never crosses a structural boundary (adversarial round 2)', () => {
+  test('a nested-array user row is never mistaken for a traversal hop — the clause conjoins at the node own block', () => {
+    const nestedMap: FieldMap = {
+      models: {
+        User: { fields: { surveys: { kind: 'object', type: 'Survey', isList: true } } },
+        Survey: {
+          fields: {
+            answer: { kind: 'scalar', type: 'String' },
+            question: { kind: 'object', type: 'Question' },
+            attachments: { kind: 'object', type: 'Attachment', isList: true },
+          },
+        },
+        Question: { fields: { title: { kind: 'scalar', type: 'String' } } },
+        Attachment: { fields: { name: { kind: 'scalar', type: 'String' } } },
+      },
+    };
+    const nestedSource = { maps: { app: nestedMap }, mapName: 'app', model: 'User' };
+    const attachRow: Condition = {
+      field: 'attachments',
+      arrayOperator: 'any',
+      condition: { all: [{ field: 'name', operator: 'equals', value: 'x' } as Condition] },
+    } as Condition;
     const { result } = renderHook(() =>
       useRuleBuilder({
-        source: deepSource,
-        decoration: deepView,
-        defaultValue: {
-          all: [
-            {
-              field: 'accounts',
-              arrayOperator: 'any',
-              condition: {
-                all: [
-                  {
-                    field: 'surveys',
-                    arrayOperator: 'any',
-                    condition: { all: [answer('A')] },
-                  } as Condition,
-                ],
-              },
-            } as Condition,
-          ],
-        } as Condition,
+        source: nestedSource,
+        decoration: surveyView,
+        defaultValue: saved({ all: [attachRow] } as Condition),
       }),
     );
     act(() => facetNode(result.current).setSelectorClause?.('question.title', 'Q1'));
-    expect(savedNode(result.current)).toEqual(
-      expect.objectContaining({
-        field: 'accounts',
-        condition: {
-          all: [
-            expect.objectContaining({
-              field: 'surveys',
-              condition: {
-                all: [
-                  expect.objectContaining(question('Q1')),
-                  { all: [expect.objectContaining(answer('A'))] },
-                ],
-              },
-            }),
-          ],
+    // The clause lands at the Survey block, ABOVE the attachments row — never
+    // inside it (where question.title cannot resolve).
+    expect(savedNode(result.current).condition).toEqual({
+      all: [
+        expect.objectContaining(question('Q1')),
+        { all: [expect.objectContaining({ field: 'attachments' })] },
+      ],
+    });
+  });
+
+  test('the fixed where is untouchable even when it sits on the declared selector field', () => {
+    const officialView: Decoration = {
+      facets: [
+        {
+          path: 'surveys',
+          label: 'Official Questions',
+          where: { field: 'question.title', operator: 'in', value: ['Q1', 'Q2'] } as Condition,
+          selectors: [{ field: 'question.title', label: 'Question', anyLabel: 'Any official' }],
         },
+      ],
+    };
+    const where = { field: 'question.title', operator: 'in', value: ['Q1', 'Q2'] };
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: surveySource,
+        decoration: officialView,
+        defaultValue: saved({
+          all: [where as Condition, question('Q1'), answer('A')],
+        } as Condition),
       }),
     );
+    // The read seam presents the clause AFTER the where prefix.
+    expect(facetNode(result.current).selectorClauses).toHaveLength(1);
+    // Re-pick replaces the selector clause; the where prefix never moves.
+    act(() => facetNode(result.current).setSelectorClause?.('question.title', 'Q2'));
+    expect(savedNode(result.current).condition).toEqual({
+      all: [
+        expect.objectContaining(where),
+        expect.objectContaining(question('Q2')),
+        { all: [expect.objectContaining(answer('A'))] },
+      ],
+    });
+    expect(facetNode(result.current).hoist?.label).toBe('Official Questions');
+    // Clearing removes the selector clause alone — the identity survives.
+    act(() => facetNode(result.current).setSelectorClause?.('question.title', null));
+    expect(savedNode(result.current).condition).toEqual({
+      all: [expect.objectContaining(where), { all: [expect.objectContaining(answer('A'))] }],
+    });
+    expect(facetNode(result.current).hoist?.label).toBe('Official Questions');
+  });
+
+  test('a presence node offers no selector seam — there is no condition surface to write into', () => {
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: surveySource,
+        decoration: surveyView,
+        defaultValue: {
+          all: [{ field: 'surveys', arrayOperator: 'notEmpty' } as Condition],
+        } as Condition,
+      }),
+    );
+    const node = facetNode(result.current);
+    expect(node.hoist?.label).toBe('Survey Responses');
+    expect(node.selectors).toBeUndefined();
+    expect(node.setSelectorClause).toBeUndefined();
+  });
+
+  test('a preset facet is atomic — declared selectors never leak a write seam', () => {
+    const presetCondition: Condition = {
+      field: 'surveys',
+      arrayOperator: 'any',
+      condition: { all: [question('Q1')] },
+    } as Condition;
+    const presetView: Decoration = {
+      facets: [
+        {
+          label: 'Answered Q1',
+          condition: presetCondition,
+          selectors: [{ field: 'question.title', label: 'Question' }],
+        },
+      ],
+    };
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: surveySource,
+        decoration: presetView,
+        defaultValue: { all: [presetCondition] } as Condition,
+      }),
+    );
+    const node = facetNode(result.current);
+    expect(node.atomic).toBe(true);
+    expect(node.selectors).toBeUndefined();
+    expect(node.setSelectorClause).toBeUndefined();
+  });
+
+  test('clear then re-pick never destroys a visible duplicate row', () => {
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: surveySource,
+        decoration: surveyView,
+        defaultValue: saved({ all: [question('Q1'), question('Q2')] } as Condition),
+      }),
+    );
+    // Ingest: Q1 hoists, Q2 stays a visible row.
+    expect(savedNode(result.current).condition).toEqual({
+      all: [
+        expect.objectContaining(question('Q1')),
+        { all: [expect.objectContaining(question('Q2'))] },
+      ],
+    });
+    // Clear unwraps to the rows alone; Q2 now renders as an ordinary row.
+    act(() => facetNode(result.current).setSelectorClause?.('question.title', null));
+    expect(savedNode(result.current).condition).toEqual({
+      all: [expect.objectContaining(question('Q2'))],
+    });
+    // Re-pick conjoins OUTSIDE — what renders as a row is never replaced.
+    act(() => facetNode(result.current).setSelectorClause?.('question.title', 'Q5'));
+    expect(savedNode(result.current).condition).toEqual({
+      all: [
+        expect.objectContaining(question('Q5')),
+        { all: [expect.objectContaining(question('Q2'))] },
+      ],
+    });
+  });
+
+  test('a lone uniform compound is the rows surface, not a claimable clause', () => {
+    const before = saved({
+      all: [{ any: [question('Q1'), question('Q2')] } as Condition],
+    } as Condition);
+    const { result } = renderHook(() =>
+      useRuleBuilder({ source: surveySource, decoration: surveyView, defaultValue: before }),
+    );
+    // Not claimed at ingest: the compound stays where it is, nothing hides.
+    expect(facetNode(result.current).selectorClauses).toBeUndefined();
+    expect(savedNode(result.current).condition).toEqual({
+      all: [
+        { any: [expect.objectContaining(question('Q1')), expect.objectContaining(question('Q2'))] },
+      ],
+    });
+  });
+
+  test('selectorClauses is undefined — never [] — when nothing is picked', () => {
+    const approvedView: Decoration = {
+      facets: [
+        {
+          path: 'surveys',
+          label: 'Approved',
+          where: { field: 'answer', operator: 'notEquals', value: '' } as Condition,
+          selectors: [{ field: 'question.title', label: 'Question' }],
+        },
+      ],
+    };
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: surveySource,
+        decoration: approvedView,
+        defaultValue: saved({
+          all: [{ field: 'answer', operator: 'notEquals', value: '' } as Condition, answer('A')],
+        } as Condition),
+      }),
+    );
+    const node = facetNode(result.current);
+    expect(node.hoist?.label).toBe('Approved');
+    expect(node.selectorClauses).toBeUndefined();
+    expect(node.setSelectorClause).toBeDefined();
+  });
+
+  test('the clause node remove() routes through the write seam — both removal gestures land on one shape', () => {
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: surveySource,
+        decoration: surveyView,
+        defaultValue: saved({
+          all: [question('Q1'), { any: [answer('A')] } as Condition],
+        } as Condition),
+      }),
+    );
+    act(() => facetNode(result.current).selectorClauses?.[0]?.remove?.());
+    // Identical to setSelectorClause(null): unwrapped, the toggle surface is the
+    // rows group itself again.
+    expect(savedNode(result.current).condition).toEqual({
+      any: [expect.objectContaining(answer('A'))],
+    });
   });
 });
 

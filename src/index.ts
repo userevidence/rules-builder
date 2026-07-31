@@ -91,6 +91,7 @@ export {
   relabelRelations,
   resolve,
   runSources,
+  selectorsApply,
   stampFacetIds,
   useFacetFields,
   useLensValuePicker,
@@ -98,7 +99,6 @@ export {
   valueShapeForOperator,
   whereConditions,
   writeSelectorClause,
-  writeSelectorClauseInGroup,
 } from './schema';
 export type { SavedRule } from './serialize';
 export { parseSavedRule, stringifySavedRule } from './serialize';
