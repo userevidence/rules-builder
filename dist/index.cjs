@@ -1055,23 +1055,12 @@ var validateFacetList = (lens, list, prefix) => {
   for (const [target, group] of byTarget)
     for (let i = 0; i < group.length; i++)
       for (let j = 0; j < group.length; j++)
-        if (i !== j && isLeadingPrefix(group[i].lead, group[j].lead)) {
+        if (i !== j && group[i].lead.length > 0 && isLeadingPrefix(group[i].lead, group[j].lead)) {
           violations.push(
             `facets on '${target}' collide: '${group[i].facet.label ?? facetId(group[i].facet)}' is a leading prefix of '${group[j].facet.label ?? facetId(group[j].facet)}' \u2014 rehydration would be ambiguous`
           );
           break;
         }
-  for (const [target, group] of byTarget)
-    for (const a of group)
-      for (const b of group) {
-        if (a === b || !a.facet.selectors?.length) continue;
-        if (!isSubset(a.lead, b.lead)) continue;
-        const extras = b.lead.filter((c) => !a.lead.some((l) => sameConditions([l], [c])));
-        if (extras.length && extras.every((c) => selectorClauseField(a.facet, c) !== void 0))
-          violations.push(
-            `facets on '${target}' collide: a '${a.facet.label ?? facetId(a.facet)}' selector pick completes '${b.facet.label ?? facetId(b.facet)}' \u2014 rehydration would flip the pick into fixed identity`
-          );
-      }
   return violations.map((v) => `${prefix}${v}`);
 };
 var decorationSurfaceOptions = (decoration) => {
