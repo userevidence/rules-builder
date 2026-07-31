@@ -118,7 +118,10 @@ out
 # Nuxt.js build / generate output
 
 .nuxt
-dist
+# dist is COMMITTED on this fork: it is consumed as a git dependency
+# (github:userevidence/rules-builder#tag), and bun neither installs devDeps nor
+# runs build for git deps — the tag must carry its own build.
+!dist
 
 # Gatsby files
 
