@@ -431,15 +431,18 @@ describe('multi-hop collection — selector machinery is fenced off entirely', (
         selectors: [{ field: 'question.title', label: 'Question' }],
       },
     ],
+    models: {
+      Account: [
+        {
+          path: 'surveys',
+          label: 'Survey Responses',
+          selectors: [{ field: 'question.title', label: 'Question', anyLabel: 'Any question' }],
+        },
+      ],
+    },
   };
 
-  test('the badge shows but no selector seam is offered — the block lives down a chain the builder cannot present', () => {
-    // The facet's canonical block is at the innermost traversal level; the outer
-    // node's dropdown could neither read it back (the collapse works on the
-    // node's own condition) nor write it safely (a lookalike nested row is
-    // indistinguishable from a traversal hop by shape). selectorsApply fences
-    // the whole machinery: recognition never claims the clause, nothing hides,
-    // and the chain renders raw under the badge.
+  test('the anchor multi-hop facet is a seed only — the inner node is recognized natively at its own scope', () => {
     const before: Condition = {
       all: [
         {
@@ -460,17 +463,25 @@ describe('multi-hop collection — selector machinery is fenced off entirely', (
     const { result } = renderHook(() =>
       useRuleBuilder({ source: deepSource, decoration: deepView, defaultValue: before }),
     );
+    // No outer badge or seam: recognition never reaches down the chain.
     const node = facetNode(result.current);
-    expect(node.hoist?.label).toBe('Account Surveys');
+    expect(node.hoist).toBeUndefined();
     expect(node.selectors).toBeUndefined();
-    expect(node.selectorClauses).toBeUndefined();
     expect(node.setSelectorClause).toBeUndefined();
-    // The innermost question clause stays an ordinary, visible row — never
-    // claimed as identity, never re-shaped at ingest.
-    const inner = (savedNode(result.current).condition as { all: Condition[] }).all[0] as {
+    // The inner surveys node wears the chrome, with the full selector machinery.
+    const inner = node.condition?.children[0] as ArrayNode;
+    expect(inner.hoist?.label).toBe('Survey Responses');
+    expect(inner.selectorClauses).toHaveLength(1);
+    act(() => inner.setSelectorClause?.('question.title', 'Q2'));
+    const innermost = (savedNode(result.current).condition as { all: Condition[] }).all[0] as {
       condition: { all?: Condition[] };
     };
-    expect(inner.condition.all).toHaveLength(2);
+    expect(innermost.condition).toEqual({
+      all: [
+        expect.objectContaining(question('Q2')),
+        { all: [expect.objectContaining(answer('A'))] },
+      ],
+    });
   });
 });
 
@@ -746,5 +757,65 @@ describe('Json-path selectors — a sub-path into a Json column is a selector li
         { all: [expect.objectContaining(answer('A'))] },
       ],
     });
+  });
+});
+
+describe('per-model facets (Decoration.models)', () => {
+  const view: Decoration = {
+    facets: [],
+    models: {
+      Survey: [{ path: 'question.title', label: 'Question Title' }],
+      User: [{ path: 'surveys', label: 'Never at root' }],
+    },
+  };
+
+  test('a nested scope offers the model facets as picker seeds and recognizes them', () => {
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: surveySource,
+        decoration: view,
+        defaultValue: saved({ all: [question('Q1')] } as Condition),
+      }),
+    );
+    const inner = facetNode(result.current).condition;
+    expect(inner?.children[0]?.hoist?.label).toBe('Question Title');
+  });
+
+  test('models never apply at the anchor root', () => {
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: surveySource,
+        decoration: view,
+        defaultValue: {
+          all: [{ field: 'surveys', arrayOperator: 'any' } as Condition],
+        } as Condition,
+      }),
+    );
+    expect(facetNode(result.current).hoist).toBeUndefined();
+  });
+
+  test('filter subtrees carry no facet machinery', () => {
+    const filterView: Decoration = {
+      facets: [],
+      models: { Survey: [{ path: 'question.title', label: 'Question Title' }] },
+    };
+    const { result } = renderHook(() =>
+      useRuleBuilder({
+        source: surveySource,
+        decoration: filterView,
+        defaultValue: {
+          all: [
+            {
+              field: 'surveys',
+              arrayOperator: 'any',
+              condition: { all: [answer('A')] },
+              filter: { all: [question('Q1')] },
+            } as Condition,
+          ],
+        } as Condition,
+      }),
+    );
+    const node = facetNode(result.current);
+    expect(node.filter?.children[0]?.hoist).toBeUndefined();
   });
 });

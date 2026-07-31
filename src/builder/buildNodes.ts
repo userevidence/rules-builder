@@ -10,7 +10,9 @@ import {
 import { switchGroupOperator } from '../core/decorate';
 import { addRule, getNode, type RulePath, removeNode, setNode } from '../core/tree';
 import {
+  consumedTopFields,
   type Decoration,
+  describeFacets,
   type Facet,
   facetBranchScope,
   facetElementLeaf,
@@ -21,6 +23,7 @@ import {
   matchFacet,
   modelDecor,
   relabelRelations,
+  scopedDecoration,
   selectorsApply,
   writeSelectorClause,
 } from '../schema/decoration';
@@ -269,7 +272,7 @@ type Ctx = {
 };
 /** What a node sees: the surface to validate against + its selectable fields. On
  *  descent into an array node's elements, this swaps to the related model. */
-type Scope = { lens: Lens; fields: BuilderField[] };
+type Scope = { lens: Lens; fields: BuilderField[]; decoration?: Decoration };
 
 /**
  * Author-time partition pin. A grouped field (surface `groupBy` axes) narrows its
@@ -464,10 +467,7 @@ const buildLeaf = (
   })();
   const valueMode: 'value' | 'path' | 'bind' =
     rec.bind !== undefined ? 'bind' : rec.path !== undefined ? 'path' : 'value';
-  const leafMatch =
-    ctx.decoration && ctx.anchorLens === scope.lens
-      ? matchFacet(ctx.anchorLens, ctx.decoration, node)
-      : undefined;
+  const leafMatch = scope.decoration ? matchFacet(scope.lens, scope.decoration, node) : undefined;
   const leafHoist: HoistBadge | undefined = leafMatch
     ? { id: facetId(leafMatch), label: leafMatch.label ?? baseName ?? '', icon: leafMatch.icon }
     : undefined;
@@ -598,11 +598,9 @@ const buildArray = (
   // Aggregate rules are never facets — skip the match (an aggregate rule also has
   // no `arrayOperator`, which the whereless-prefix heuristic would otherwise catch).
   const matchedFacet =
-    !isAggregate && ctx.decoration && ctx.anchorLens === scope.lens
-      ? matchFacet(ctx.anchorLens, ctx.decoration, node)
-      : undefined;
+    !isAggregate && scope.decoration ? matchFacet(scope.lens, scope.decoration, node) : undefined;
   const overrideLeaf = matchedFacet
-    ? facetElementLeaf(ctx.anchorLens, matchedFacet, ctx.surfaceOpts)
+    ? facetElementLeaf(scope.lens, matchedFacet, ctx.surfaceOpts)
     : undefined;
 
   // Elements belong to the related model → author condition/filter against its surface.
@@ -619,11 +617,21 @@ const buildArray = (
           describeModelFields(relLens, rel.mapName, rel.modelName),
           ctx.decoration,
         );
+        const fields = overrideLeaf
+          ? relFields.map((f) => (f.name === overrideLeaf.name ? { ...f, ...overrideLeaf } : f))
+          : relFields;
+        const relDecoration = scopedDecoration(ctx.decoration, rel.mapName, rel.modelName);
+        if (!relDecoration) return { lens: relLens, fields };
+        // The scope's own facets lead its picker, exactly like the anchor root.
+        const hoisted = describeFacets(relLens, relDecoration, ctx.surfaceOpts);
+        const consumed = consumedTopFields(relDecoration);
         return {
           lens: relLens,
-          fields: overrideLeaf
-            ? relFields.map((f) => (f.name === overrideLeaf.name ? { ...f, ...overrideLeaf } : f))
-            : relFields,
+          fields: [
+            ...hoisted,
+            ...(consumed.size ? fields.filter((f) => !consumed.has(f.name)) : fields),
+          ],
+          decoration: relDecoration,
         };
       })()
     : scope;
@@ -633,6 +641,9 @@ const buildArray = (
   let selectorClauseNodes: BuilderNode[] | undefined;
   const buildSub = (key: 'condition' | 'filter'): GroupNode => {
     const subRoot = asGroupRoot((rec[key] as Condition | undefined) ?? { all: [] });
+    // Facets apply in element conditions only — never filters or aggregate windows.
+    const subScope =
+      key === 'condition' && !isAggregate ? relScope : { ...relScope, decoration: undefined };
     const subCtx: Ctx = {
       ...ctx,
       root: subRoot,
@@ -648,7 +659,7 @@ const buildArray = (
       // The identity block is the fixed `where` prefix plus the selector clauses
       // right after it — a selector-backed facet (survey question, badge name)
       // has user-picked identity the `where` machinery can't know about.
-      const lead = leadingIdentityCount(ctx.anchorLens, matchedFacet, node);
+      const lead = leadingIdentityCount(scope.lens, matchedFacet, node);
       const kids = (subRoot as { all?: Condition[] }).all ?? [];
       const tail = kids[lead];
       if (lead > 0 && kids.length === lead + 1 && tail && isGroupNode(tail)) {
@@ -662,7 +673,7 @@ const buildArray = (
         const clauseSlice = kids.slice(whereLead, lead);
         selectorClauseNodes = clauseSlice.length
           ? clauseSlice.map((clause, i) => {
-              const built = buildNode(clause, [whereLead + i], depth + 1, subCtx, relScope);
+              const built = buildNode(clause, [whereLead + i], depth + 1, subCtx, subScope);
               // An OR-block clause carries its field on its (uniform) children.
               const clauseField =
                 (clause as { field?: string }).field ??
@@ -679,10 +690,20 @@ const buildArray = (
         // A condition surface is never removable (matching the sub-root contract):
         // without the override, the rows group's own remove would leak here and
         // delete every user row in one gesture, stranding the hidden identity.
-        return { ...buildGroup(tail, [lead], depth + 1, subCtx, relScope), remove: undefined };
+        return {
+          ...buildGroup(tail, [lead], depth + 1, subCtx, subScope),
+          // The rows group is the outer facet's surface: not removable, never re-badged.
+          remove: undefined,
+          hoist: undefined,
+          atomic: undefined,
+          facetMode: undefined,
+          selectors: undefined,
+          selectorClauses: undefined,
+          setSelectorClause: undefined,
+        };
       }
     }
-    return buildGroup(subRoot, [], depth + 1, subCtx, relScope);
+    return buildGroup(subRoot, [], depth + 1, subCtx, subScope);
   };
 
   // Aggregate target: the numeric scalar (or check()-only Json) on the RELATED model
@@ -711,7 +732,7 @@ const buildArray = (
     rel &&
     !isAggregate &&
     conditionNode !== undefined &&
-    selectorsApply(ctx.anchorLens, matchedFacet)
+    selectorsApply(scope.lens, matchedFacet)
       ? matchedFacet
       : undefined;
 
@@ -868,10 +889,7 @@ const buildGroup = (
   ctx: Ctx,
   scope: Scope,
 ): GroupNode => {
-  const matched =
-    ctx.decoration && ctx.anchorLens === scope.lens
-      ? matchFacet(ctx.anchorLens, ctx.decoration, node)
-      : undefined;
+  const matched = scope.decoration ? matchFacet(scope.lens, scope.decoration, node) : undefined;
   const preset = matched !== undefined && isPreset(matched);
   // A branch is a to-one relation surfaced as a scoped group, and always a *nested*
   // group — gating on `path.length` stops the whereless prefix heuristic from
@@ -896,7 +914,7 @@ const buildGroup = (
   const groupLabel =
     groupHoist?.label ??
     (path.length === 0
-      ? modelDecor(ctx.decoration, ctx.anchorLens.mapName, ctx.anchorLens.model).label
+      ? modelDecor(ctx.decoration, scope.lens.mapName, scope.lens.model).label
       : undefined);
 
   // Canonical branch shape (identity leading + one trailing user-rows group): the
@@ -906,13 +924,13 @@ const buildGroup = (
   // hidden, so a toggle honestly changes what the user sees — and breaks the
   // bind — instead of silently absorbing a hidden clause.
   const identityLead =
-    branchFacet && branch ? leadingIdentityCount(ctx.anchorLens, branchFacet, node) : 0;
+    branchFacet && branch ? leadingIdentityCount(scope.lens, branchFacet, node) : 0;
   const kids = groupChildrenOf(node);
   const rowsTail = kids[identityLead];
   // Branch identity is conjoined at the top of the group itself, so the selector
   // write seam targets the group directly.
   const selectorGroupFacet =
-    branchFacet?.selectors?.length && branch && selectorsApply(ctx.anchorLens, branchFacet)
+    branchFacet?.selectors?.length && branch && selectorsApply(scope.lens, branchFacet)
       ? branchFacet
       : undefined;
   const setGroupSelectorClause = selectorGroupFacet
@@ -953,6 +971,7 @@ const buildGroup = (
             })
           : undefined,
       setSelectorClause: setGroupSelectorClause,
+      atomic: undefined,
       facetMode: facetModeControl(groupFacet, node as Rec, path, ctx),
       remove: path.length ? () => ctx.commit(removeNode(ctx.root, path)) : undefined,
     };
@@ -1061,5 +1080,5 @@ export const buildRoot = (
     decoration: opts.decoration,
     surfaceOpts: opts.surfaceOpts ?? {},
   };
-  return buildNode(normalized, [], 0, ctx, { lens, fields });
+  return buildNode(normalized, [], 0, ctx, { lens, fields, decoration: opts.decoration });
 };

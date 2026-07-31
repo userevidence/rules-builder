@@ -2,6 +2,8 @@ import {
   type ArrayOperator,
   type Condition,
   checkRuleAgainstLens,
+  createLens,
+  exposedSurface,
   type FieldKind,
   type Lens,
 } from '@inixiative/json-rules';
@@ -73,6 +75,11 @@ export const isPreset = (facet: Facet): boolean => facet.condition !== undefined
  */
 export type Decoration = {
   facets: Facet[];
+  /** Per-model facets, keyed `map:Model` or `Model` (`map:Model` wins). Applied
+   *  natively wherever an array `condition` surface for that model is built —
+   *  paths relative to the model, so every facet is single-hop at its level.
+   *  Never at the anchor root, in `filter` subtrees, or aggregate windows. */
+  models?: Record<string, Facet[]>;
   labels?: {
     /** map decor — `"salesforce"`. (Reserved.) */
     maps?: Record<string, Decor>;
@@ -183,10 +190,36 @@ export const relabelRelations = (
   });
 };
 
+/** The facets for a `mapName:modelName` scope — `map:Model` beats bare `Model`. */
+export const modelFacets = (
+  decoration: Decoration | undefined,
+  mapName: string,
+  modelName: string,
+): Facet[] =>
+  decoration?.models?.[`${mapName}:${modelName}`] ?? decoration?.models?.[modelName] ?? [];
+
+/** The decoration a nested scope matches against; `undefined` = no recognition there. */
+export const scopedDecoration = (
+  decoration: Decoration | undefined,
+  mapName: string,
+  modelName: string,
+): Decoration | undefined => {
+  const facets = modelFacets(decoration, mapName, modelName);
+  if (!facets.length) return undefined;
+  return { facets, models: decoration?.models, labels: decoration?.labels };
+};
+
+/** Scope-qualified stamp: the resolved `map:Model` of the matching lens (bridges
+ *  make bare model names ambiguous). A foreign stamp resolves to no facet and
+ *  falls through to an ordinary search. */
+export const scopedFacetId = (lens: Lens, facet: Facet): string =>
+  `${lens.mapName}:${lens.model}/${facetId(facet)}`;
+
 /** A stable id — the selector option value and React key. Only the *fixed* `where`
  *  folds in (it is identity); `defaultWhere` is editable, so it never does. The
  *  `where` is canonicalized (like every comparison here) so key order doesn't
- *  yield different ids for structurally identical wheres. */
+ *  yield different ids for structurally identical wheres. Unscoped by design —
+ *  it is also the picker field name; the scope prefix lives on the stamp. */
 export const facetId = (facet: Facet): string => {
   if (facet.condition !== undefined) return `#preset:${JSON.stringify(canonical(facet.condition))}`;
   return facet.where
@@ -354,13 +387,9 @@ const selectorClauseAt = (facet: Facet, conds: Condition[], index: number): stri
  * the write seam all stay hands-off there, so nothing is ever claimed, hidden,
  * or written at the wrong model scope. Presets are atomic: never.
  */
-export const selectorsApply = (lens: Lens, facet: Facet): boolean => {
-  if (!facet.selectors?.length || isPreset(facet)) return false;
-  const resolved = resolvePath(lens, facet.path);
-  if (!resolved) return false;
-  if (resolved.kind === 'branch') return true;
-  if (resolved.kind !== 'collection') return false;
-  // Zero inner hops: the element leaf must not cross another list relation.
+/** Zero inner hops (the element leaf crosses no further list). Multi-hop
+ *  facets are picker seeds only — the inner block belongs to the model scope. */
+const collectionSingleHop = (lens: Lens, resolved: CollectionResolved): boolean => {
   let { mapName, modelName } = resolved.target;
   for (const seg of resolved.elementLeaf?.split('.') ?? []) {
     const entry = lens.maps[mapName]?.models[modelName]?.fields[seg];
@@ -372,6 +401,14 @@ export const selectorsApply = (lens: Lens, facet: Facet): boolean => {
     modelName = target.modelName;
   }
   return true;
+};
+
+export const selectorsApply = (lens: Lens, facet: Facet): boolean => {
+  if (!facet.selectors?.length || isPreset(facet)) return false;
+  const resolved = resolvePath(lens, facet.path);
+  if (!resolved) return false;
+  if (resolved.kind === 'branch') return true;
+  return resolved.kind === 'collection' && collectionSingleHop(lens, resolved);
 };
 
 /** {@link leadingWhereCount} generalized to the full identity block: the fixed
@@ -757,7 +794,9 @@ export const matchFacet = (
   const stamped = (node as { __facetId?: unknown }).__facetId;
   if (stamped === null) return undefined;
   if (typeof stamped === 'string') {
-    const byId = decoration.facets.find((f) => facetId(f) === stamped);
+    // Stamps are scope-qualified; one minted under another scope resolves to no
+    // facet here and falls through to the ordinary search.
+    const byId = decoration.facets.find((f) => scopedFacetId(lens, f) === stamped);
     if (byId) {
       const { __facetId: _f, ...bare } = node as Record<string, unknown>;
       if (matchFacet(lens, { ...decoration, facets: [byId] }, bare as Condition)) return byId;
@@ -805,18 +844,13 @@ export const matchFacet = (
       continue;
     }
     if (rec.field !== resolved.listPath) continue;
-    // Descend the traversal nodes (each a single nested array child) to the
-    // innermost, where the fixed `where` and value sit. Operators are editable
-    // defaults, not identity, so they are not checked — only path + `where`.
-    let dest = rec;
-    while (true) {
-      const cs = (dest.condition as { all?: Condition[] } | undefined)?.all;
-      if (cs?.length === 1 && cs[0] && typeof cs[0] === 'object' && 'arrayOperator' in cs[0]) {
-        dest = cs[0] as typeof rec;
-      } else break;
-    }
+    // Recognition never crosses a model boundary: a multi-hop collection is a
+    // picker seed only — the inner block is recognized natively at its own
+    // scope by the model's facets, never by reaching down the chain from here.
+    if (!collectionSingleHop(lens, resolved)) continue;
+    // Operators are editable defaults, not identity — only path + `where` count.
     const lead = whereConditions(facet.where);
-    const destRec = dest.condition as { all?: Condition[]; any?: Condition[] } | undefined;
+    const destRec = rec.condition as { all?: Condition[]; any?: Condition[] } | undefined;
     // A fixed `where` is identity only when AND-ed, so the subset check below reads
     // `all` alone — an `any` group containing the where means something else.
     const destConds = destRec?.all ?? [];
@@ -865,9 +899,9 @@ export const matchFacet = (
  * a node's facet-hood can't silently re-derive differently as siblings change.
  * Already-stamped (including detached) nodes pass through untouched. Session
  * meta only: stripMeta drops the key before `value` emits, so a saved rule
- * always reloads via a fresh search. Array `condition`/`filter` subtrees are
- * scoped to the RELATED model — the builder never facet-matches inside them, so
- * the walk stops at the array node, exactly like buildNodes.
+ * always reloads via a fresh search. Stamps are scope-qualified. The walk
+ * re-anchors at each array node's `condition` with the related model's own
+ * facets; `filter` and aggregate windows carry no facet machinery.
  */
 export const stampFacetIds = (
   condition: Condition,
@@ -883,10 +917,42 @@ export const stampFacetIds = (
     if (facet) {
       if (!isPreset(facet))
         next = normalizeFacetShape(lens, facet, next as Condition) as Record<string, unknown>;
-      next.__facetId = facetId(facet);
+      next.__facetId = scopedFacetId(lens, facet);
+    }
+  }
+  // Re-anchor after normalization so inner nodes stamp at final positions.
+  if ('arrayOperator' in next && next.condition !== undefined) {
+    const rel = relationScopeOf(lens, next.field as string | undefined);
+    const scoped = rel ? scopedDecoration(decoration, rel.mapName, rel.modelName) : undefined;
+    if (rel && scoped) {
+      const relLens = exposedSurface(
+        createLens({ maps: lens.maps, mapName: rel.mapName, model: rel.modelName }),
+      );
+      next.condition = stampFacetIds(next.condition as Condition, relLens, scoped);
     }
   }
   return next as Condition;
+};
+
+/** The list-relation target of an array rule's (possibly dotted) field. */
+const relationScopeOf = (
+  lens: Lens,
+  field: string | undefined,
+): { mapName: string; modelName: string } | undefined => {
+  if (!field) return undefined;
+  const segments = field.split('.');
+  let mapName = lens.mapName;
+  let modelName = lens.model;
+  for (let i = 0; i < segments.length; i++) {
+    const entry = lens.maps[mapName]?.models[modelName]?.fields[segments[i]];
+    if (!entry) return undefined;
+    const target = relationTarget(entry, mapName);
+    if (!target) return undefined;
+    if (i === segments.length - 1) return entry.isList ? target : undefined;
+    mapName = target.mapName;
+    modelName = target.modelName;
+  }
+  return undefined;
 };
 
 /**
@@ -955,19 +1021,13 @@ const normalizeFacetShape = (lens: Lens, facet: Facet, node: Condition): Conditi
     return next ? ({ ...rec, all: next } as Condition) : node;
   }
 
-  // Collection: descend the traversal chain to the innermost condition block.
-  const reorder = (r: Record<string, unknown>): Record<string, unknown> => {
-    const cond = r.condition as { all?: Condition[] } | undefined;
-    const cs = cond?.all;
-    if (!cs) return r;
-    if (cs.length === 1 && cs[0] && typeof cs[0] === 'object' && 'arrayOperator' in cs[0]) {
-      const inner = reorder(cs[0] as Record<string, unknown>);
-      return inner === cs[0] ? r : { ...r, condition: { ...cond, all: [inner as Condition] } };
-    }
-    const next = canonicalize(cs);
-    return next ? { ...r, condition: { ...cond, all: next } } : r;
-  };
-  return reorder(rec) as Condition;
+  // Collection: the facet's block IS the node's own condition — recognition is
+  // single-hop by construction, so there is never a chain to descend.
+  const cond = rec.condition as { all?: Condition[] } | undefined;
+  const cs = cond?.all;
+  if (!cs) return node;
+  const next = canonicalize(cs);
+  return next ? ({ ...rec, condition: { ...cond, all: next } } as Condition) : node;
 };
 
 /**
@@ -1080,11 +1140,42 @@ export const writeSelectorClause = (
  * authored under the specific one would also match the general one).
  */
 export const validateDecoration = (lens: Lens, decoration: Decoration): string[] => {
+  const violations = validateFacetList(lens, decoration.facets, '');
+  // models[...] lists validate against the same lens construction the runtime
+  // scopes with, once per map binding for bare-'Model' keys.
+  for (const [scopeKey, facets] of Object.entries(decoration.models ?? {})) {
+    const [mapPart, modelPart] = scopeKey.includes(':')
+      ? scopeKey.split(':', 2)
+      : [undefined, scopeKey];
+    const bindings = mapPart
+      ? lens.maps[mapPart]?.models[modelPart]
+        ? [mapPart]
+        : []
+      : Object.keys(lens.maps).filter((m) => lens.maps[m]?.models[modelPart]);
+    if (!bindings.length) {
+      violations.push(`models['${scopeKey}'] does not bind to any model in the lens`);
+      continue;
+    }
+    for (const mapName of bindings) {
+      const scopeLens = exposedSurface(createLens({ maps: lens.maps, mapName, model: modelPart }));
+      violations.push(
+        ...validateFacetList(
+          scopeLens,
+          facets,
+          `models['${scopeKey}'] @ ${mapName}:${modelPart}: `,
+        ),
+      );
+    }
+  }
+  return violations;
+};
+
+const validateFacetList = (lens: Lens, list: Facet[], prefix: string): string[] => {
   const violations: string[] = [];
   const ids = new Set<string>();
   const byTarget = new Map<string, { facet: Facet; lead: Condition[] }[]>();
 
-  for (const facet of decoration.facets) {
+  for (const facet of list) {
     if (facet.condition !== undefined) {
       // A preset must be a valid rule against the lens (it works as-is, no pickers).
       const id = facetId(facet);
@@ -1134,7 +1225,21 @@ export const validateDecoration = (lens: Lens, decoration: Decoration): string[]
           break;
         }
 
-  return violations;
+  // A selector pick is identity too: if B's where is A's where plus clauses on
+  // A's selector fields, a rule authored under A rehydrates as B.
+  for (const [target, group] of byTarget)
+    for (const a of group)
+      for (const b of group) {
+        if (a === b || !a.facet.selectors?.length) continue;
+        if (!isSubset(a.lead, b.lead)) continue;
+        const extras = b.lead.filter((c) => !a.lead.some((l) => sameConditions([l], [c])));
+        if (extras.length && extras.every((c) => selectorClauseField(a.facet, c) !== undefined))
+          violations.push(
+            `facets on '${target}' collide: a '${a.facet.label ?? facetId(a.facet)}' selector pick completes '${b.facet.label ?? facetId(b.facet)}' — rehydration would flip the pick into fixed identity`,
+          );
+      }
+
+  return violations.map((v) => `${prefix}${v}`);
 };
 
 /** Flatten a decoration's field/value decor into `SurfaceOptions` label maps so
