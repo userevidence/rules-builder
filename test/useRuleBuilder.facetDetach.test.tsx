@@ -137,18 +137,20 @@ describe('__facetId — ingest stamping and node-controlled matching', () => {
   const lens = resolve(eavSource);
   const nps = npsView.facets[0];
 
-  test('stampFacetIds stamps a recognizable node with its facet id', () => {
+  test('stampFacetIds stamps a recognizable node with its scope-qualified facet id', () => {
     const stamped = stampFacetIds(savedFacet([row('9')]), lens, npsView) as {
       all: ({ __facetId?: string } & Condition)[];
     };
-    expect(stamped.all[0].__facetId).toBe(facetId(nps));
+    expect(stamped.all[0].__facetId).toBe(`app:User/${facetId(nps)}`);
   });
 
   test('null suspends matching; a stamped id pins it without a search', () => {
     const node = savedFacet([row('9')]).all?.[0] as Condition;
     expect(matchFacet(lens, npsView, { ...node, __facetId: null } as Condition)).toBeUndefined();
-    // Pinned by id: resolves even when the shape alone would be ambiguous.
-    expect(matchFacet(lens, npsView, { ...node, __facetId: facetId(nps) } as Condition)).toBe(nps);
+    // Pinned by scoped id: resolves even when the shape alone would be ambiguous.
+    expect(
+      matchFacet(lens, npsView, { ...node, __facetId: `app:User/${facetId(nps)}` } as Condition),
+    ).toBe(nps);
     // An id that no longer resolves falls through to the ordinary search.
     expect(matchFacet(lens, npsView, { ...node, __facetId: '#gone' } as Condition)).toBe(nps);
   });

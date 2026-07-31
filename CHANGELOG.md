@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.24.0 — selector clauses are facet identity
+
+- **A selector-backed facet's picked clause (the survey question, the badge
+  name) is identity the `where` machinery can't see** — user data, not
+  decoration, but absorbing it into an `any` corrupts the meaning identically
+  ("answered THE question with one of these" → "answered it at all, OR gave one
+  of these answers"). The canonical shape now hoists it next to the fixed
+  `where`: `{ all: [...where, ...selector clauses, { all|any: rows }] }`.
+  Ingest normalizes flat legacy trees into it; only the FIRST clause per
+  declared selector field hoists (a duplicate stays an ordinary, visible row).
+- **New node surface**: `selectorClauses` (real builder nodes for the hoisted
+  clauses — dropdowns read/edit through them while the toggle can only re-key
+  the rows group) and `setSelectorClause(field, value)` — the one write seam:
+  replace at position, `null` removes, an array value writes an `in` clause,
+  and a new clause conjoins ABOVE the rows group, never inside it. Present on
+  collection nodes AND branch facet groups — one block-level seam
+  (`writeSelectorClause`): a branch group writes at its own top, a collection
+  at its own `condition`, and nothing ever writes across a model boundary.
+- **A same-field clause counts as the selector's own ONLY when conjoined** —
+  inside an `any` it is a disjunct meaning something else, so the write seam
+  never replaces or removes it; a write conjoins outside and the disjunct stays
+  an honestly visible row. (An already-corrupted `any` tree still matches and
+  renders raw, unrewritten — repair is a migration, not a silent load-time
+  semantic change.)
+- **Per-model facets — recognition at every level, natively**
+  (`Decoration.models`, keyed `map:Model` or `Model`): a model's facets apply
+  wherever an array `condition` surface for that model is built, at any depth —
+  declared once, recognized on every route, offered as picker seeds in nested
+  builders. Paths are relative to the model, so every facet is single-hop at
+  its own level by construction: identity never lives across a model boundary
+  from the node that wears its chrome. Never at the anchor root (that is
+  `facets`' curated set), never in `filter` subtrees or aggregate windows.
+  Ingest re-anchors the same way: `stampFacetIds` recurses into each array
+  node's `condition` with the related model's lens and facets.
+- **Anchor facets no longer reach down traversal chains** (design-adversarial
+  ruling): a multi-hop path facet is a picker SEED only — the pre-traversed
+  entry point stays, but recognition and normalization never descend a chain,
+  so the inner block has exactly one possible owner (the model-scoped facet)
+  and a nested-array user row can never be mistaken for a traversal hop. The
+  outer seed and the inner recognition compose without knowing about each
+  other. Grafted rows groups are never re-badged by inner recognition.
+- **Stamps are scope-qualified** (`map:Model/facetId`, from the resolved scope
+  lens): a stamp minted under another scope resolves to no facet and falls
+  through to an ordinary search. `facetId` itself stays unscoped (it is also
+  the picker field name and the whole-collection sentinel).
+- **`validateDecoration` validates every scope**: each `models[...]` list is
+  checked against the same lens construction the runtime scopes with (once per
+  map binding for bare-`Model` keys), and a new collision class is rejected —
+  facet B's `where` being facet A's `where` plus clauses on A's declared
+  selector fields (a pick under A would rehydrate as B's fixed identity).
+- **The seam never crosses a structural boundary** (adversarial findings):
+  selectors apply only where the machinery can actually see the clause — a
+  branch group or a single-hop collection (`selectorsApply`). The fixed `where`
+  is untouchable even when it sits on the declared selector field (the clause
+  search starts after the where prefix). On the live surfaces a clause in the
+  FINAL position is never the selector's (a canonical tree always ends with
+  the rows group), so what renders as a row is never replaced or deleted by a
+  dropdown gesture. The seam exists only where every part of it is real:
+  never on presence nodes (no condition surface) and never on presets
+  (atomic). A hoisted clause node's `remove()` routes through the seam, so
+  both removal gestures land on the same shape. Nested sub-roots are labeled
+  with their OWN model's decor, not the anchor's.
+- **Complex selectors**: an internal OR block whose every child is a leaf on
+  the same declared selector field (`{ any: [q=Q1, q=Q2] }`) IS the selector's
+  clause — hoisted as its own block so the rows toggle can't absorb it, and
+  surfaced through `selectorClauses` as a group.
+- Exported: `leadingIdentityCount(lens, facet, node)`, `writeSelectorClause`
+  (one block-level seam for both node kinds), `selectorsApply`, `modelFacets`,
+  `scopedDecoration`, `scopedFacetId`.
+
 ## 0.23.1 — adversarial fixes: disjunct identity never matches; no remove on the rows surface
 
 - **An `any` compound never matches a where-carrying branch facet.** Identity is

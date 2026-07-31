@@ -12,6 +12,7 @@ import {
   type Decoration,
   describeFacets,
   matchFacet,
+  stampFacetIds,
   validateDecoration,
 } from '../src/schema/decoration';
 
@@ -331,7 +332,7 @@ describe('consumedTopFields / matchFacet', () => {
     expect(matchFacet(eav, npsDecoration, node)?.label).toBe('NPS');
   });
 
-  test('recognizes a multi-boundary saved node by descending to the destination where', () => {
+  test('a multi-hop path facet is a seed only — the inner block is recognized at its own scope', () => {
     const decoration: Decoration = {
       facets: [
         {
@@ -341,11 +342,29 @@ describe('consumedTopFields / matchFacet', () => {
           label: 'NPS across orders',
         },
       ],
+      models: {
+        Order: [
+          {
+            path: 'customFields.value',
+            where: { field: 'key', operator: 'equals', value: 'nps' },
+            kind: 'Int',
+            label: 'NPS',
+          },
+        ],
+      },
     };
     const [f] = describeFacets(eav, decoration);
-    // round-trip the emitted seed: it should collapse back to its facet.
-    expect(matchFacet(eav, decoration, f.seed as Condition)?.label).toBe('NPS across orders');
-    // and it evaluates as "some order has an nps custom field > 5".
+    // The outer node never matches — recognition does not reach down the chain.
+    expect(matchFacet(eav, decoration, f.seed as Condition)).toBeUndefined();
+    // Ingest re-anchors: the inner customFields node stamps at the Order scope.
+    const stamped = stampFacetIds({ all: [f.seed as Condition] }, eav, decoration) as {
+      all: [{ __facetId?: string; condition: { all: [{ __facetId?: string }] } }];
+    };
+    expect(stamped.all[0].__facetId).toBeUndefined();
+    expect(stamped.all[0].condition.all[0].__facetId).toBe(
+      'prisma:Order/customFields.value#{"field":"key","operator":"equals","value":"nps"}',
+    );
+    // The seed still evaluates as "some order has an nps custom field > 5".
     const seed = f.seed as { condition: { all: [{ condition: { all: [Condition, Condition] } }] } };
     const dest = seed.condition.all[0];
     const rule = {
@@ -500,5 +519,57 @@ describe('validateDecoration — collision-free guarantee', () => {
     });
     expect(violations.some((v) => v.includes('duplicate'))).toBe(true);
     expect(violations.some((v) => v.includes('does not resolve'))).toBe(true);
+  });
+});
+
+describe('validateDecoration — models scopes and selector-completion collisions', () => {
+  test('a models key that binds no model is a violation; a valid one validates per scope', () => {
+    expect(
+      validateDecoration(eav, { facets: [], models: { Ghost: [{ path: 'x', label: 'X' }] } }),
+    ).toEqual(["models['Ghost'] does not bind to any model in the lens"]);
+    const bad = validateDecoration(eav, {
+      facets: [],
+      models: { Order: [{ path: 'nope.value', label: 'Broken' }] },
+    });
+    expect(bad).toHaveLength(1);
+    expect(bad[0]).toContain("models['Order'] @ prisma:Order");
+    expect(
+      validateDecoration(eav, {
+        facets: [],
+        models: {
+          Order: [
+            {
+              path: 'customFields.value',
+              where: { field: 'key', operator: 'equals', value: 'nps' },
+              label: 'NPS',
+            },
+          ],
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  test('a selector pick that completes another facet where is a collision', () => {
+    const violations = validateDecoration(eav, {
+      facets: [
+        {
+          path: 'customFields.value',
+          where: { field: 'key', operator: 'equals', value: 'nps' },
+          label: 'NPS',
+          selectors: [{ field: 'status', label: 'Status' }],
+        },
+        {
+          path: 'customFields.value',
+          where: {
+            all: [
+              { field: 'key', operator: 'equals', value: 'nps' },
+              { field: 'status', operator: 'equals', value: 'active' },
+            ],
+          },
+          label: 'Active NPS',
+        },
+      ],
+    });
+    expect(violations.some((v) => v.includes('selector pick completes'))).toBe(true);
   });
 });
