@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { type RuleBuilderSource, runSources } from '../../src';
 import { RuleEditor } from '../RuleTree';
 import { RuleEditorShadcn } from '../RuleTreeShadcn';
-import { sampleRows, segmentDecoration } from '../samples';
+import { sampleRows } from '../samples';
 import { Badge, Button, Code, EditorHeader, Empty, Panel, Row, Select, tokens } from '../ui';
 import { type ParentRef, resolveRef } from '../workspace';
 import type { TabProps } from './types';
@@ -30,7 +30,7 @@ export const BuilderTab = ({ ws, patch, selected }: TabProps & { selected?: stri
 
   const [sourceKey, setSourceKey] = useState('');
   const [renderer, setRenderer] = useState<'plain' | 'shadcn'>('shadcn');
-  const [decorated, setDecorated] = useState(true);
+  const [decorationName, setDecorationName] = useState('segment');
   const [ruleName, setRuleName] = useState('');
   const choice = choices.find((c) => c.key === sourceKey) ?? choices[0];
 
@@ -139,11 +139,11 @@ export const BuilderTab = ({ ws, patch, selected }: TabProps & { selected?: stri
           <label style={{ fontSize: 13, color: tokens.textMuted }}>Surface:</label>
           <Select
             ariaLabel="surface"
-            value={decorated ? 'decorated' : 'raw'}
-            onChange={(v) => setDecorated(v === 'decorated')}
+            value={ws.decorations[decorationName] ? decorationName : ''}
+            onChange={setDecorationName}
             options={[
-              { value: 'decorated', label: 'Decorated (names + icons)' },
-              { value: 'raw', label: 'Raw (backend names)' },
+              { value: '', label: 'Raw (backend names)' },
+              ...Object.keys(ws.decorations).map((n) => ({ value: n, label: `decorated · ${n}` })),
             ]}
           />
           <span style={{ fontSize: 12, color: tokens.textMuted }}>
@@ -157,23 +157,23 @@ export const BuilderTab = ({ ws, patch, selected }: TabProps & { selected?: stri
           <Badge tone="danger">{analysis.error}</Badge>
         ) : analysis?.source && renderer === 'shadcn' ? (
           <RuleEditorShadcn
-            key={`${choice.key}:${decorated}`}
+            key={`${choice.key}:${decorationName}`}
             source={analysis.source}
             sourceValues={analysis.sourceValues}
             maxDepth={ws.maxDepth}
             rule={ws.rule}
             onChange={(rule) => patch({ rule })}
-            decoration={decorated ? segmentDecoration : undefined}
+            decoration={ws.decorations[decorationName]}
           />
         ) : analysis?.source ? (
           <RuleEditor
-            key={`${choice.key}:${decorated}`}
+            key={`${choice.key}:${decorationName}`}
             source={analysis.source}
             sourceValues={analysis.sourceValues}
             maxDepth={ws.maxDepth}
             rule={ws.rule}
             onChange={(rule) => patch({ rule })}
-            decoration={decorated ? segmentDecoration : undefined}
+            decoration={ws.decorations[decorationName]}
           />
         ) : null}
       </Panel>

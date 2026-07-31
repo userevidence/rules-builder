@@ -4,6 +4,7 @@ import {
   type ArrayNode,
   type BuilderNode,
   type Decoration,
+  type FacetModeControl,
   type GroupNode,
   type LeafNode,
   type RuleBuilderSource,
@@ -121,7 +122,7 @@ const ValueField = ({ value }: { value: ValueControl }) => {
 };
 
 const Leaf = ({ node }: { node: LeafNode }) => (
-  <div className="flex flex-wrap items-center gap-2" aria-invalid={!node.valid}>
+  <div className="flex flex-wrap items-center gap-1.5" aria-invalid={!node.valid}>
     <Select
       aria-label="leaf kind"
       options={[
@@ -189,7 +190,7 @@ const AggregateFacet = ({ node }: { node: ArrayNode }) => {
   const isRange = agg.value.shape === 'range';
   const value = agg.value.current;
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-1.5">
       <Select
         aria-label="aggregate mode"
         options={agg.modeOptions}
@@ -253,16 +254,92 @@ const AggregateFacet = ({ node }: { node: ArrayNode }) => {
   );
 };
 
+const FacetModeToggle = ({ mode }: { mode?: FacetModeControl }) =>
+  mode ? (
+    <Button
+      aria-label="facet mode"
+      variant="ghost"
+      size="sm"
+      className="text-[10px] text-muted-foreground"
+      title={mode.value === 'faceted' ? 'detach: edit the raw structure' : 're-attach the facet'}
+      onClick={() => mode.set(mode.value === 'faceted' ? 'raw' : 'faceted')}
+    >
+      {mode.value === 'faceted' ? '⚙ raw' : '↩ facet'}
+    </Button>
+  ) : null;
+
+type SelectorDecl = { field: string; label?: string; anyLabel?: string };
+const clauseField = (c: BuilderNode): string | undefined => {
+  if (c.kind === 'leaf')
+    return c.field?.subPath ? `${c.field.value}.${c.field.subPath}` : c.field?.value;
+  if (c.kind === 'group') return clauseField(c.children[0] as BuilderNode);
+  return undefined;
+};
+
+// The facet's own knobs: one dropdown per declared selector, reading through the
+// hoisted clause node and writing through the seam. anyLabel clears (null).
+const Selectors = ({
+  selectors,
+  clauses,
+  set,
+}: {
+  selectors?: SelectorDecl[];
+  clauses?: BuilderNode[];
+  set?: (field: string, value: unknown | null) => void;
+}) => {
+  if (!selectors?.length || !set) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {selectors.map((sel) => {
+        const clause = clauses?.find((c) => clauseField(c) === sel.field);
+        const leaf = clause?.kind === 'leaf' ? clause : undefined;
+        const current = leaf?.value?.current;
+        return (
+          <div key={sel.field} className="flex items-center gap-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {sel.label ?? sel.field}
+            </span>
+            {clause && !leaf ? (
+              // A complex clause (OR block) renders as its group + a clear.
+              <>
+                <Node node={clause} />
+                <Button variant="ghost" size="sm" onClick={() => set(sel.field, null)}>
+                  {sel.anyLabel ?? 'any'}
+                </Button>
+              </>
+            ) : leaf?.value?.options ? (
+              <Select
+                aria-label={sel.label ?? sel.field}
+                options={[{ value: '', label: sel.anyLabel ?? 'any' }, ...leaf.value.options]}
+                value={current == null ? '' : String(current)}
+                onChange={(v) => set(sel.field, v === '' ? null : v)}
+              />
+            ) : (
+              <Input
+                aria-label={sel.label ?? sel.field}
+                className="w-28"
+                placeholder={sel.anyLabel ?? 'any'}
+                value={current == null ? '' : String(current)}
+                onChange={(e) => set(sel.field, e.target.value === '' ? null : e.target.value)}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 const ArrayRule = ({ node }: { node: ArrayNode }) => (
   <div
-    className="grid gap-2 rounded-lg border border-border border-l-2 border-l-violet-500 bg-violet-50/40 p-2.5"
+    className="grid gap-1.5 rounded-md border border-border border-l-2 border-l-violet-500 bg-violet-50/40 p-2"
     aria-invalid={!node.valid}
   >
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-1.5">
       {node.hoist ? (
         // A hoisted facet collapses to its name — the fixed `where` is its identity,
         // so there is nothing to pick; the badge IS the field.
-        <span className="text-sm font-medium">
+        <span className="text-xs font-semibold">
           {node.hoist.icon ? `${node.hoist.icon}  ` : ''}
           {node.hoist.label}
         </span>
@@ -302,16 +379,19 @@ const ArrayRule = ({ node }: { node: ArrayNode }) => (
         <span className="text-xs text-violet-600">↪ {node.relation.modelName}</span>
       )}
       {!node.valid && <Badge tone="danger">✗</Badge>}
-      <Button
-        aria-label="remove"
-        variant="ghost"
-        size="icon"
-        className="ml-auto"
-        onClick={node.remove}
-      >
-        ✕
-      </Button>
+      <div className="ml-auto flex items-center gap-1">
+        <FacetModeToggle mode={node.facetMode} />
+        <Button aria-label="remove" variant="ghost" size="icon" onClick={node.remove}>
+          ✕
+        </Button>
+      </div>
     </div>
+
+    <Selectors
+      selectors={node.selectors}
+      clauses={node.selectorClauses}
+      set={node.setSelectorClause}
+    />
 
     {node.condition && (
       <div className="grid gap-1">
@@ -360,9 +440,9 @@ const Group = ({ node }: { node: GroupNode }) => {
   const visible = node.children;
   return (
     <div
-      className={`rounded-lg border border-border border-l-2 p-3 ${node.depth ? 'ml-4 border-l-muted-foreground/40 bg-muted/30' : 'border-l-primary'}`}
+      className={`rounded-md border border-border border-l-2 p-2 ${node.depth ? 'ml-3 border-l-muted-foreground/40 bg-muted/30' : 'border-l-primary'}`}
     >
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
         <Button
           variant="ghost"
           size="icon"
@@ -371,7 +451,7 @@ const Group = ({ node }: { node: GroupNode }) => {
         >
           {collapsed ? '▸' : '▾'}
         </Button>
-        {title && <span className="text-sm font-medium">{title}</span>}
+        {title && <span className="text-xs font-semibold">{title}</span>}
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           conditions — match
         </span>
@@ -384,18 +464,24 @@ const Group = ({ node }: { node: GroupNode }) => {
           value={node.operator.value}
           onChange={(v) => node.operator.set(v === 'any' ? 'any' : 'all')}
         />
+        <FacetModeToggle mode={node.facetMode} />
         {node.remove && (
           <Button variant="ghost" size="icon" aria-label="remove group" onClick={node.remove}>
             ✕
           </Button>
         )}
       </div>
+      <Selectors
+        selectors={node.selectors}
+        clauses={node.selectorClauses}
+        set={node.setSelectorClause}
+      />
       {!collapsed && (
-        <div className="mt-2 grid gap-2">
+        <div className="mt-1.5 grid gap-1.5">
           {visible.map((c) => (
             <Node key={c.id} node={c} />
           ))}
-          <div className="flex gap-2">
+          <div className="flex gap-1.5">
             <Button variant="outline" size="sm" onClick={node.addRule}>
               + rule
             </Button>

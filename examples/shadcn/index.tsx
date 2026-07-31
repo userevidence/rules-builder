@@ -27,7 +27,7 @@ export const Select = ({
 }: SelectProps) => (
   <select
     className={cn(
-      'h-9 rounded-md border border-input bg-background px-2.5 py-1 text-sm shadow-sm',
+      'h-7 rounded-md border border-input bg-background px-2 text-xs shadow-sm',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       'disabled:cursor-not-allowed disabled:opacity-50',
       className,
@@ -64,7 +64,7 @@ export const MultiSelect = ({
   <select
     multiple
     className={cn(
-      'min-h-9 rounded-md border border-input bg-background px-2.5 py-1 text-sm shadow-sm',
+      'min-h-7 rounded-md border border-input bg-background px-2 py-0.5 text-xs shadow-sm',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       className,
     )}
@@ -85,7 +85,7 @@ type InputProps = React.InputHTMLAttributes<HTMLInputElement>;
 export const Input = ({ className, ...props }: InputProps) => (
   <input
     className={cn(
-      'h-9 rounded-md border border-input bg-background px-2.5 py-1 text-sm shadow-sm',
+      'h-7 rounded-md border border-input bg-background px-2 text-xs shadow-sm',
       'placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
       'disabled:cursor-not-allowed disabled:opacity-50',
       className,
@@ -95,7 +95,7 @@ export const Input = ({ className, ...props }: InputProps) => (
 );
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-1.5 rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
+  'inline-flex items-center justify-center gap-1 rounded-md text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50',
   {
     variants: {
       variant: {
@@ -105,7 +105,7 @@ const buttonVariants = cva(
         ghost: 'hover:bg-accent hover:text-accent-foreground',
         destructive: 'bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90',
       },
-      size: { sm: 'h-8 px-2.5', md: 'h-9 px-4', icon: 'h-8 w-8' },
+      size: { sm: 'h-7 px-2', md: 'h-8 px-3', icon: 'h-6 w-6' },
     },
     defaultVariants: { variant: 'default', size: 'md' },
   },
@@ -141,7 +141,7 @@ export const Badge = ({ className, tone, ...props }: BadgeProps) => (
 
 export const Card = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
-    className={cn('rounded-lg border border-border bg-background p-3 shadow-sm', className)}
+    className={cn('rounded-lg border border-border bg-background p-2.5 shadow-sm', className)}
     {...props}
   />
 );

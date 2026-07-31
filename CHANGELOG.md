@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.24.1 — catch-all facets are sanctioned
+
+- **A catch-all facet coexists with stricter projections on the same target.**
+  `validateDecoration` no longer treats an empty `where` as a colliding prefix,
+  and the selector-completion rejection is removed: a whereless facet (or one
+  whose selector pick completes a stricter facet's identity) is the fallback,
+  and the stricter facet wins on rehydration — deterministic refinement, not
+  ambiguity. Pick `key = nps` under a generic "Custom Field" facet, reload, and
+  the node upgrades to the curated "NPS" facet.
+- Example app: compact form styling; selector dropdowns and the facetMode
+  toggle in the shadcn renderer; a Decorations tab — author facets (anchor and
+  per-model scopes, selectors, wheres) with live `validateDecoration` output,
+  saved decorations selectable in the Builder tab.
+
 ## 0.24.0 — selector clauses are facet identity
 
 - **A selector-backed facet's picked clause (the survey question, the badge

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { defaultWorkspace } from './samples';
 import { BridgesTab } from './tabs/BridgesTab';
 import { BuilderTab } from './tabs/BuilderTab';
+import { DecorationsTab } from './tabs/DecorationsTab';
 import { DocsTab } from './tabs/DocsTab';
 import { FieldmapsTab } from './tabs/FieldmapsTab';
 import { LensEditor } from './tabs/LensEditor';
@@ -19,6 +20,7 @@ type Section =
   | 'lenses'
   | 'narrowings'
   | 'rules'
+  | 'decorations'
   | 'permissions'
   | 'transitions'
   | 'valuepicker'
@@ -60,6 +62,11 @@ const inventorySections = (ws: Workspace): SectionDef[] => [
 const builderSections = (ws: Workspace): SectionDef[] => [
   { key: 'rules', label: 'Rules', items: Object.keys(ws.rules).map((n) => ({ id: n, label: n })) },
   {
+    key: 'decorations',
+    label: 'Decorations',
+    items: Object.keys(ws.decorations).map((n) => ({ id: n, label: n })),
+  },
+  {
     key: 'permissions',
     label: 'Permissions',
     items: Object.keys(ws.permissions).map((r) => ({ id: r, label: r })),
@@ -97,6 +104,9 @@ export const App = () => {
     } else if (section === 'rules') {
       const { [id]: _, ...rest } = ws.rules;
       patch({ rules: rest });
+    } else if (section === 'decorations') {
+      const { [id]: _, ...rest } = ws.decorations;
+      patch({ decorations: rest });
     } else if (section === 'permissions') {
       const { [id]: _, ...rest } = ws.permissions;
       patch({ permissions: rest });
@@ -119,6 +129,8 @@ export const App = () => {
         return <NarrowingEditor ws={ws} patch={patch} selected={sel.item} />;
       case 'rules':
         return <BuilderTab ws={ws} patch={patch} selected={sel.item} />;
+      case 'decorations':
+        return <DecorationsTab ws={ws} patch={patch} selected={sel.item} />;
       case 'permissions':
         return <PermissionsTab ws={ws} patch={patch} selected={sel.item} />;
       case 'transitions':
