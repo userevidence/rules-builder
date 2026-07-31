@@ -38,6 +38,7 @@ const sample = (): Workspace => ({
       rule: { all: [{ field: 'tier', operator: 'equals', value: 'g' }] },
     },
   },
+  decorations: {},
   permissions: {
     'app:User': {
       actions: { read: { rule: { all: [{ field: 'tier', operator: 'equals', value: 'g' }] } } },
@@ -67,6 +68,7 @@ describe('workspace', () => {
       narrowings: {},
       rule: { all: [] },
       rules: {},
+      decorations: {},
       permissions: {},
       transitions: {},
       maxDepth: 4,

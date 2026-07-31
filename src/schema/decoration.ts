@@ -1218,26 +1218,18 @@ const validateFacetList = (lens: Lens, list: Facet[], prefix: string): string[] 
   for (const [target, group] of byTarget)
     for (let i = 0; i < group.length; i++)
       for (let j = 0; j < group.length; j++)
-        if (i !== j && isLeadingPrefix(group[i].lead, group[j].lead)) {
+        // An empty lead is a catch-all, not a prefix — stricter projections
+        // coexist with it and win on rehydration (most-specific-wins).
+        if (i !== j && group[i].lead.length > 0 && isLeadingPrefix(group[i].lead, group[j].lead)) {
           violations.push(
             `facets on '${target}' collide: '${group[i].facet.label ?? facetId(group[i].facet)}' is a leading prefix of '${group[j].facet.label ?? facetId(group[j].facet)}' — rehydration would be ambiguous`,
           );
           break;
         }
 
-  // A selector pick is identity too: if B's where is A's where plus clauses on
-  // A's selector fields, a rule authored under A rehydrates as B.
-  for (const [target, group] of byTarget)
-    for (const a of group)
-      for (const b of group) {
-        if (a === b || !a.facet.selectors?.length) continue;
-        if (!isSubset(a.lead, b.lead)) continue;
-        const extras = b.lead.filter((c) => !a.lead.some((l) => sameConditions([l], [c])));
-        if (extras.length && extras.every((c) => selectorClauseField(a.facet, c) !== undefined))
-          violations.push(
-            `facets on '${target}' collide: a '${a.facet.label ?? facetId(a.facet)}' selector pick completes '${b.facet.label ?? facetId(b.facet)}' — rehydration would flip the pick into fixed identity`,
-          );
-      }
+  // A catch-all facet (selector on a field) plus stricter projections (fixed
+  // wheres on that field) is sanctioned: a pick that completes the stricter
+  // facet's identity rehydrates as it — deterministic refinement, not collision.
 
   return violations.map((v) => `${prefix}${v}`);
 };

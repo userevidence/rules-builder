@@ -474,10 +474,10 @@ describe('validateDecoration — collision-free guarantee', () => {
     expect(violations).toEqual([]);
   });
 
-  test('rejects a no-where facet colliding with a where facet on the same list', () => {
+  test('a no-where catch-all coexists with a where facet on the same list (stricter wins)', () => {
     const violations = validateDecoration(eav, {
       facets: [
-        { path: 'customFields.value', label: 'All custom fields' }, // no where → matches everything
+        { path: 'customFields.value', label: 'All custom fields' }, // catch-all
         {
           path: 'customFields.score',
           where: { field: 'key', operator: 'equals', value: 'nps' },
@@ -485,8 +485,7 @@ describe('validateDecoration — collision-free guarantee', () => {
         },
       ],
     });
-    expect(violations.length).toBeGreaterThan(0);
-    expect(violations[0]).toContain('collide');
+    expect(violations).toEqual([]);
   });
 
   test('rejects `where` on a leaf facet (a leaf ignores it, and it would dup the picker option)', () => {
@@ -549,27 +548,35 @@ describe('validateDecoration — models scopes and selector-completion collision
     ).toEqual([]);
   });
 
-  test('a selector pick that completes another facet where is a collision', () => {
-    const violations = validateDecoration(eav, {
+  test('a catch-all facet coexists with stricter projections; a pick refines into them', () => {
+    const decoration: Decoration = {
       facets: [
+        {
+          path: 'customFields',
+          label: 'Custom Field',
+          selectors: [{ field: 'key', label: 'Field', anyLabel: 'Any field' }],
+        },
         {
           path: 'customFields.value',
           where: { field: 'key', operator: 'equals', value: 'nps' },
+          kind: 'Int',
           label: 'NPS',
-          selectors: [{ field: 'status', label: 'Status' }],
-        },
-        {
-          path: 'customFields.value',
-          where: {
-            all: [
-              { field: 'key', operator: 'equals', value: 'nps' },
-              { field: 'status', operator: 'equals', value: 'active' },
-            ],
-          },
-          label: 'Active NPS',
         },
       ],
-    });
-    expect(violations.some((v) => v.includes('selector pick completes'))).toBe(true);
+    };
+    expect(validateDecoration(eav, decoration)).toEqual([]);
+    // A pick of key=nps under the catch-all IS the stricter facet's identity:
+    // most-specific-wins upgrades it on rehydration.
+    const picked = {
+      field: 'customFields',
+      arrayOperator: 'any',
+      condition: {
+        all: [
+          { field: 'key', operator: 'equals', value: 'nps' },
+          { all: [{ field: 'value', operator: 'greaterThan', value: 5 }] },
+        ],
+      },
+    } as Condition;
+    expect(matchFacet(eav, decoration, picked)?.label).toBe('NPS');
   });
 });

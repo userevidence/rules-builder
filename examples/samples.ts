@@ -184,6 +184,14 @@ export const sampleLenses: Record<string, SavedLens> = {
  */
 export const segmentDecoration: Decoration = {
   facets: [
+    // Catch-all EAV facet: a Field selector picks the key; picking a curated key
+    // (nps/persona) refines into the stricter facet below on reload.
+    {
+      path: 'enrichments',
+      label: 'Custom Field',
+      icon: '🧩',
+      selectors: [{ field: 'key', label: 'Field', anyLabel: 'Any field' }],
+    },
     // EAV enrichments collapsed to named fields — the marquee fix.
     {
       path: 'enrichments.value',
@@ -203,6 +211,10 @@ export const segmentDecoration: Decoration = {
     { path: 'crm:Account.name', label: 'Account Name', icon: '💼' },
     { path: 'crm:Account.tier', label: 'Account Tier', icon: '💼' },
   ],
+  // Per-model facets: applied natively at every Order surface, any depth.
+  models: {
+    Order: [{ path: 'status', label: 'Order Status', icon: '📦' }],
+  },
   labels: {
     models: {
       'app:User': { label: 'Advocate', icon: '⭐' },
@@ -321,6 +333,7 @@ export const defaultWorkspace = (): Workspace => ({
   bridges: sampleBridges,
   lenses: sampleLenses,
   narrowings: sampleNarrowings,
+  decorations: { segment: segmentDecoration },
   permissions: samplePermissions,
   transitions: sampleTransitions,
 });
