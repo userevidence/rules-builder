@@ -18,6 +18,7 @@ export {
   validateDecoration,
   whereConditions,
   writeSelectorClause,
+  writeSelectorClauseInGroup,
 } from './decoration';
 export type { LensValueOption, LensValuePickerOptions } from './lensValuePicker';
 export { lensValuePicker, useLensValuePicker } from './lensValuePicker';

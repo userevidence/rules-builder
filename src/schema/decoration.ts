@@ -297,16 +297,40 @@ export const leadingWhereCount = (facet: Facet, node: Condition): number => {
   return isLeadingPrefix(lead, conds) ? lead.length : 0;
 };
 
-/** A leaf on one of the facet's declared selector fields — the picked-through-a-
- *  dropdown identity of a selector-backed facet (a survey QUESTION, a badge NAME).
- *  The operator isn't checked: whatever authored the clause, it belongs to the
- *  selector, not to the ordinary rows. */
-const isSelectorClause = (facet: Facet, cond: Condition): boolean => {
-  if (!cond || typeof cond !== 'object' || !('field' in cond)) return false;
-  if ('arrayOperator' in cond || 'aggregate' in cond) return false;
-  const field = (cond as { field?: unknown }).field;
-  return (facet.selectors ?? []).some((s) => s.field === field);
+/** The declared selector field a condition belongs to, or `undefined` when it is
+ *  an ordinary row. Two shapes qualify — the picked-through-a-dropdown identity
+ *  of a selector-backed facet (a survey QUESTION, a badge NAME):
+ *   - a leaf on a declared selector field (operator unchecked — `equals`, `in`,
+ *    whatever authored it, the clause belongs to the selector, not to the rows);
+ *   - a compound whose every child is a leaf on the SAME declared selector field
+ *    (an internal OR — "question is Q1 or Q2" — is the selector's clause as its
+ *    own block; left among the rows, the group toggle could absorb it). */
+const selectorClauseField = (facet: Facet, cond: Condition): string | undefined => {
+  if (!cond || typeof cond !== 'object') return undefined;
+  if ('arrayOperator' in cond || 'aggregate' in cond) return undefined;
+  const declared = (field: unknown): field is string =>
+    (facet.selectors ?? []).some((s) => s.field === field);
+  if ('field' in cond) {
+    const field = (cond as { field?: unknown }).field;
+    return declared(field) ? field : undefined;
+  }
+  const kids = groupChildren(cond);
+  if (!kids?.length) return undefined;
+  const first = (kids[0] as { field?: unknown } | undefined)?.field;
+  if (!declared(first)) return undefined;
+  const uniform = kids.every(
+    (c) =>
+      c &&
+      typeof c === 'object' &&
+      !('arrayOperator' in c) &&
+      !('aggregate' in c) &&
+      (c as { field?: unknown }).field === first,
+  );
+  return uniform ? first : undefined;
 };
+
+const isSelectorClause = (facet: Facet, cond: Condition): boolean =>
+  selectorClauseField(facet, cond) !== undefined;
 
 /** {@link leadingWhereCount} generalized to the full identity block: the fixed
  *  `where` prefix plus — immediately after it — the first clause per declared
@@ -328,9 +352,8 @@ export const leadingIdentityCount = (facet: Facet, node: Condition): number => {
   const seen = new Set<string>();
   while (count < conds.length) {
     const cond = conds[count];
-    if (!cond || !isSelectorClause(facet, cond)) break;
-    const field = String((cond as { field: string }).field);
-    if (seen.has(field)) break;
+    const field = cond ? selectorClauseField(facet, cond) : undefined;
+    if (field === undefined || seen.has(field)) break;
     seen.add(field);
     count += 1;
   }
@@ -854,9 +877,7 @@ const normalizeFacetShape = (facet: Facet, node: Condition): Condition => {
     // field hoists — a duplicate is an ordinary row the renderer must keep
     // visible, not a second hidden knob.
     for (const field of selectorFields) {
-      const at = rest.findIndex(
-        (c) => isSelectorClause(facet, c) && (c as { field?: unknown }).field === field,
-      );
+      const at = rest.findIndex((c) => selectorClauseField(facet, c) === field);
       if (at >= 0) identity.push(...rest.splice(at, 1));
     }
     // Nothing claimable (a selector-backed facet before any pick): the flat rows
@@ -896,15 +917,21 @@ const normalizeFacetShape = (facet: Facet, node: Condition): Condition => {
 };
 
 /**
- * Write a selector clause into a facet node's `condition`, preserving the
- * canonical shape and the rows group's own operator. `value: null` removes the
- * clause. This is the ONE write seam for selector dropdowns: an existing clause
- * is replaced in place; a new clause lands in the identity block ABOVE the rows
+ * Write a selector clause into a group-shaped block, preserving the canonical
+ * shape and the rows group's own operator. `value: null` removes the clause; an
+ * array value writes an `in` clause (the multi-pick form of the selector). This
+ * is the ONE write seam for selector dropdowns: an existing clause is replaced
+ * at its position; a new clause lands in the identity block ABOVE the rows
  * group — never inside it — so a prior ALL/ANY toggle keeps meaning what it said:
  * `{ any: rows }` becomes `{ all: [clause, { any: rows }] }`, not
- * `{ any: [clause, ...rows] }`.
+ * `{ any: [clause, ...rows] }`. A same-field clause counts as the selector's own
+ * ONLY when conjoined — inside an `any` it is a disjunct meaning something else,
+ * so it is never replaced or removed; a write conjoins outside and the disjunct
+ * stays an honestly visible row. Branch facets write here directly (their
+ * identity sits at the top of the group itself); collection facets go through
+ * {@link writeSelectorClause}, which descends the traversal chain first.
  */
-export const writeSelectorClause = (
+export const writeSelectorClauseInGroup = (
   facet: Facet,
   condition: Condition | undefined,
   field: string,
@@ -914,9 +941,8 @@ export const writeSelectorClause = (
   const rec = cond as Record<string, unknown>;
   const key = Array.isArray(rec.all) ? 'all' : Array.isArray(rec.any) ? 'any' : undefined;
   const children: Condition[] = key ? [...(rec[key] as Condition[])] : [];
-  const at = children.findIndex(
-    (c) => isSelectorClause(facet, c) && (c as { field?: unknown }).field === field,
-  );
+  const at =
+    key === 'all' ? children.findIndex((c) => selectorClauseField(facet, c) === field) : -1;
 
   if (value === null) {
     if (at < 0 || !key) return cond;
@@ -937,13 +963,17 @@ export const writeSelectorClause = (
     return { ...rec, [key]: children } as Condition;
   }
 
+  // The dropdown's own semantics: one pick pins with `equals`, several with `in`.
+  // Always a fresh leaf — the prior clause may be an `in` or a compound OR block,
+  // and coercion stamping happens at emit.
+  const clause = { field, operator: Array.isArray(value) ? 'in' : 'equals', value } as Condition;
+
   if (at >= 0) {
-    // Replace in place — position (and therefore the canonical shape) is preserved.
-    children[at] = { ...(children[at] as Record<string, unknown>), value } as Condition;
+    // Replace at position — the canonical shape is preserved.
+    children[at] = clause;
     return { ...rec, [key as string]: children } as Condition;
   }
 
-  const clause = { field, operator: 'equals', value } as Condition;
   // An `any` group (or a non-group) is all rows — the clause must conjoin OUTSIDE
   // it. This is the second corruption entry point: appending INTO the group would
   // faithfully preserve an already-toggled `any` around the identity.
@@ -957,9 +987,8 @@ export const writeSelectorClause = (
   const seen = new Set<string>();
   while (block < children.length) {
     const next = children[block];
-    if (!next || !isSelectorClause(facet, next)) break;
-    const nextField = String((next as { field: string }).field);
-    if (seen.has(nextField)) break;
+    const nextField = next ? selectorClauseField(facet, next) : undefined;
+    if (nextField === undefined || seen.has(nextField)) break;
     seen.add(nextField);
     block += 1;
   }
@@ -970,6 +999,37 @@ export const writeSelectorClause = (
       ? rest[0]
       : ({ all: rest } as Condition);
   return { ...rec, all: [...identity, clause, tail] } as Condition;
+};
+
+/**
+ * {@link writeSelectorClauseInGroup} for a collection facet node's `condition`:
+ * descends the traversal chain (each hop a single nested array child, exactly as
+ * matching and normalization do) so the clause lands in the innermost block —
+ * the element model the selector's field resolves against — never on an outer
+ * hop where the field doesn't exist.
+ */
+export const writeSelectorClause = (
+  facet: Facet,
+  condition: Condition | undefined,
+  field: string,
+  value: unknown,
+): Condition => {
+  const cond = condition ?? ({ all: [] } as Condition);
+  const cs = (cond as { all?: Condition[] }).all;
+  const sole = cs?.length === 1 && cs[0] && typeof cs[0] === 'object' ? cs[0] : undefined;
+  if (
+    sole &&
+    'arrayOperator' in sole &&
+    (sole as { condition?: unknown }).condition !== undefined
+  ) {
+    const hop = sole as Record<string, unknown>;
+    const next = writeSelectorClause(facet, hop.condition as Condition, field, value);
+    return {
+      ...(cond as Record<string, unknown>),
+      all: [{ ...hop, condition: next } as Condition],
+    } as Condition;
+  }
+  return writeSelectorClauseInGroup(facet, cond, field, value);
 };
 
 /**

@@ -22,6 +22,7 @@ import {
   modelDecor,
   relabelRelations,
   writeSelectorClause,
+  writeSelectorClauseInGroup,
 } from '../schema/decoration';
 import type { BuilderField, SurfaceOptions } from '../schema/surface';
 import { describeModelFields, valueShapeForOperator } from '../schema/surface';
@@ -139,6 +140,16 @@ export type GroupNode = {
    *  as plain editable children. Session-only: the `__facetId` meta backing it is
    *  stripped before `value` emits, so a saved rule always reloads faceted. */
   facetMode?: FacetModeControl;
+  /** The matched branch facet's declared inner selector rows (mirrors
+   *  {@link ArrayNode.selectors}). */
+  selectors?: { field: string; label?: string; anyLabel?: string }[];
+  /** The canonical selector clauses hoisted out of the rows surface (mirrors
+   *  {@link ArrayNode.selectorClauses}); absent when the group isn't canonical. */
+  selectorClauses?: BuilderNode[];
+  /** Create/replace (value) or remove (`null`) the clause for a declared selector
+   *  field — writes into the top of the group itself, where branch identity
+   *  lives, preserving the canonical shape and the rows group's operator. */
+  setSelectorClause?: (field: string, value: unknown | null) => void;
   remove?: () => void;
 };
 
@@ -218,10 +229,12 @@ export type ArrayNode = {
   selectors?: { field: string; label?: string; anyLabel?: string }[];
   /** The canonical selector clauses (at most one per declared selector field),
    *  hoisted OUT of `condition` so the rows toggle can never absorb them. A
-   *  renderer's selector dropdowns read and edit through these leaves; absent
-   *  when the node isn't in canonical shape (a legacy flat tree keeps its clause
-   *  inside `condition` until ingest normalizes it). */
-  selectorClauses?: LeafNode[];
+   *  renderer's selector dropdowns read and edit through these nodes — usually a
+   *  leaf, but a complex selector (an internal OR block, "question is Q1 or Q2")
+   *  surfaces as its own group. Absent when the node isn't in canonical shape (a
+   *  legacy flat tree keeps its clause inside `condition` until ingest
+   *  normalizes it). */
+  selectorClauses?: BuilderNode[];
   /** Create/replace (value) or remove (`null`) the clause for a declared selector
    *  field, preserving the canonical shape and the rows group's operator — a new
    *  clause conjoins ABOVE the rows group, never inside it. */
@@ -617,7 +630,7 @@ const buildArray = (
 
   // A nested condition/filter is a sub-tree: build it over its own root, and on
   // every commit splice the whole sub-condition back under the array rule's key.
-  let selectorClauseLeaves: LeafNode[] | undefined;
+  let selectorClauseNodes: BuilderNode[] | undefined;
   const buildSub = (key: 'condition' | 'filter'): GroupNode => {
     const subRoot = asGroupRoot((rec[key] as Condition | undefined) ?? { all: [] });
     const subCtx: Ctx = {
@@ -639,14 +652,15 @@ const buildArray = (
       const kids = (subRoot as { all?: Condition[] }).all ?? [];
       const tail = kids[lead];
       if (lead > 0 && kids.length === lead + 1 && tail && isGroupNode(tail)) {
-        // Selector clauses get real leaf nodes even though they sit OUTSIDE the
-        // rows group — the renderer's selector dropdowns read and write through
-        // them (value/options/remove), while the toggle below can only ever
-        // re-key the rows group.
+        // Selector clauses get real builder nodes even though they sit OUTSIDE
+        // the rows group — the renderer's selector dropdowns read and write
+        // through them (value/options/remove; a complex OR-block selector comes
+        // back as a group), while the toggle below can only ever re-key the
+        // rows group.
         const whereLead = leadingWhereCount(matchedFacet, node);
-        selectorClauseLeaves = kids
+        selectorClauseNodes = kids
           .slice(whereLead, lead)
-          .map((clause, i) => buildLeaf(clause, [whereLead + i], depth + 1, subCtx, relScope));
+          .map((clause, i) => buildNode(clause, [whereLead + i], depth + 1, subCtx, relScope));
         // A condition surface is never removable (matching the sub-root contract):
         // without the override, the rows group's own remove would leak here and
         // delete every user row in one gesture, stranding the hidden identity.
@@ -665,7 +679,7 @@ const buildArray = (
     : undefined;
 
   // Built ahead of the node literal: `buildSub('condition')` is what fills
-  // `selectorClauseLeaves`, and the literal reads that capture further up.
+  // `selectorClauseNodes`, and the literal reads that capture further up.
   const conditionNode =
     rel && (isAggregate || cat === 'predicate' || cat === 'count')
       ? buildSub('condition')
@@ -716,7 +730,7 @@ const buildArray = (
         }
       : undefined,
     selectors: matchedFacet?.selectors,
-    selectorClauses: selectorClauseLeaves,
+    selectorClauses: selectorClauseNodes,
     setSelectorClause:
       matchedFacet?.selectors?.length && rel && !isAggregate
         ? (selectorField, value) => {
@@ -863,15 +877,44 @@ const buildGroup = (
   // the whole unit. Any other matched shape renders raw under the badge: nothing
   // hidden, so a toggle honestly changes what the user sees — and breaks the
   // bind — instead of silently absorbing a hidden clause.
-  const identityLead = branchFacet && branch ? leadingWhereCount(branchFacet, node) : 0;
+  const identityLead = branchFacet && branch ? leadingIdentityCount(branchFacet, node) : 0;
   const kids = groupChildrenOf(node);
   const rowsTail = kids[identityLead];
+  // Branch identity is conjoined at the top of the group itself, so the selector
+  // write seam targets the group directly — no traversal chain to descend.
+  const setGroupSelectorClause =
+    branchFacet?.selectors?.length && branch
+      ? (selectorField: string, value: unknown | null) => {
+          if (!branchFacet.selectors?.some((s) => s.field === selectorField)) return;
+          ctx.commit(
+            setNode(
+              ctx.root,
+              path,
+              writeSelectorClauseInGroup(branchFacet, node, selectorField, value),
+            ),
+          );
+        }
+      : undefined;
   if (identityLead > 0 && kids.length === identityLead + 1 && rowsTail && isGroupNode(rowsTail)) {
+    // Selector clauses get real builder nodes even though they sit outside the
+    // rows surface (see the collection collapse in buildArray) — dropdowns read
+    // and write through them while the toggle can only re-key the rows group.
+    const whereLead = branchFacet ? leadingWhereCount(branchFacet, node) : 0;
     const inner = buildGroup(rowsTail, [...path, identityLead], depth, ctx, groupScope);
     return {
       ...inner,
       label: groupLabel ?? inner.label,
       hoist: groupHoist,
+      selectors: branchFacet?.selectors,
+      selectorClauses:
+        identityLead > whereLead
+          ? kids
+              .slice(whereLead, identityLead)
+              .map((clause, i) =>
+                buildNode(clause, [...path, whereLead + i], depth, ctx, groupScope),
+              )
+          : undefined,
+      setSelectorClause: setGroupSelectorClause,
       facetMode: facetModeControl(groupFacet, node as Rec, path, ctx),
       remove: path.length ? () => ctx.commit(removeNode(ctx.root, path)) : undefined,
     };
@@ -896,6 +939,8 @@ const buildGroup = (
     hoist: groupHoist,
     atomic: preset ? true : undefined,
     facetMode: facetModeControl(groupFacet, node as Rec, path, ctx),
+    selectors: branchFacet?.selectors,
+    setSelectorClause: setGroupSelectorClause,
     remove: path.length ? () => ctx.commit(removeNode(ctx.root, path)) : undefined,
   };
 };

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.24.0 — selector clauses are facet identity
+
+- **A selector-backed facet's picked clause (the survey question, the badge
+  name) is identity the `where` machinery can't see** — user data, not
+  decoration, but absorbing it into an `any` corrupts the meaning identically
+  ("answered THE question with one of these" → "answered it at all, OR gave one
+  of these answers"). The canonical shape now hoists it next to the fixed
+  `where`: `{ all: [...where, ...selector clauses, { all|any: rows }] }`.
+  Ingest normalizes flat legacy trees into it; only the FIRST clause per
+  declared selector field hoists (a duplicate stays an ordinary, visible row).
+- **New node surface**: `selectorClauses` (real builder nodes for the hoisted
+  clauses — dropdowns read/edit through them while the toggle can only re-key
+  the rows group) and `setSelectorClause(field, value)` — the one write seam:
+  replace at position, `null` removes, an array value writes an `in` clause,
+  and a new clause conjoins ABOVE the rows group, never inside it. Present on
+  collection nodes AND branch facet groups (branch identity writes at the top
+  of the group itself via `writeSelectorClauseInGroup`; collection writes
+  descend the traversal chain via `writeSelectorClause`, so a multi-hop facet's
+  clause lands on the element model, never an outer hop).
+- **A same-field clause counts as the selector's own ONLY when conjoined** —
+  inside an `any` it is a disjunct meaning something else, so the write seam
+  never replaces or removes it; a write conjoins outside and the disjunct stays
+  an honestly visible row. (An already-corrupted `any` tree still matches and
+  renders raw, unrewritten — repair is a migration, not a silent load-time
+  semantic change.)
+- **Complex selectors**: an internal OR block whose every child is a leaf on
+  the same declared selector field (`{ any: [q=Q1, q=Q2] }`) IS the selector's
+  clause — hoisted as its own block so the rows toggle can't absorb it, and
+  surfaced through `selectorClauses` as a group.
+- Exported: `leadingIdentityCount` (the `where` prefix plus the selector
+  clauses right after it), `writeSelectorClause`, `writeSelectorClauseInGroup`.
+
 ## 0.23.1 — adversarial fixes: disjunct identity never matches; no remove on the rows surface
 
 - **An `any` compound never matches a where-carrying branch facet.** Identity is
